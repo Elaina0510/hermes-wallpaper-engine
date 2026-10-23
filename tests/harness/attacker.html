@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>attacker — forged we-frame sender</title>
+  </head>
+  <body style="margin:0;background:#3a1d1d;color:#ffb4a9;font:12px monospace">
+    <div id="log">attacker idle</div>
+    <script>
+      // T16b adversarial page.
+      //
+      // This document is served from a *different* origin than the media server,
+      // so every message it posts has `event.origin = <attacker origin>`, which
+      // the harness's bridge must reject even though the payload is a
+      // byte-identical `{op:"we-frame", t}`.
+      //
+      // It forges three kinds of traffic, all of which must leave the harness
+      // state machine untouched:
+      //   * a burst of we-frame heartbeats (would fake "live" if unchecked)
+      //   * an error frame (would fake a fallback if unchecked)
+      //   * an unknown op (must not be counted at all)
+      var q = new URLSearchParams(location.search);
+      var rounds = Number(q.get('rounds')) || 12;
+      var gap = Number(q.get('gap')) || 120;
+      var sent = 0;
+
+      function fire() {
+        try {
+          window.parent.postMessage({ op: 'we-frame', t: performance.now() }, '*');
+          window.parent.postMessage({ op: 'error', message: 'forged-from-attacker' }, '*');
+          window.parent.postMessage({ op: 'setPaused', v: true }, '*');
+          sent += 1;
+          document.getElementById('log').textContent =
+            'attacker sent=' + sent + ' origin=' + location.origin;
+          if (sent >= rounds) {
+            document.title = 'attacker done sent=' + sent;
+            return;
+          }
+        } catch (e) {
+          document.title = 'attacker error: ' + e.message;
+          return;
+        }
+        setTimeout(fire, gap);
+      }
+      window.addEventListener('load', function () {
+        setTimeout(fire, 300);
+      });
+      window.ATTACKER = {
+        origin: location.origin,
+        sent: function () {
+          return sent;
+        },
+      };
+    </script>
+  </body>
+</html>

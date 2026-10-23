@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>trusted-origin heartbeat sender</title>
+  </head>
+  <body style="margin:0;background:#16251c;color:#9ae6b4;font:12px monospace">
+    <div id="log">sender idle</div>
+    <script>
+      // Stand-in for the render page's heartbeat, used to prove the *accept* side
+      // of the origin gate in a real browser.
+      //
+      // MUST be served from the media origin (through /s/<token>/...), otherwise
+      // event.origin !== mediaOrigin and a correct bridge drops every message —
+      // which is exactly what tests/harness/attacker.html demonstrates from the
+      // other side.
+      //
+      // This is NOT the vendor renderer: the vendor page sends no `we-frame` at
+      // all for a scene (see CONTRACT-observations in the test module). It only
+      // exists so T16b can show "trusted origin accepted / foreign origin
+      // rejected" with the same payload bytes.
+      var q = new URLSearchParams(location.search);
+      var every = Number(q.get('every')) || 200;
+      var sendError = q.get('error') === '1';
+      var sent = 0;
+      var stop = false;
+
+      function beat() {
+        if (stop) return;
+        try {
+          window.parent.postMessage({ op: 'we-frame', t: performance.now() }, '*');
+          sent += 1;
+          if (sendError && sent === 4) {
+            window.parent.postMessage({ op: 'error', message: 'trusted-error-frame' }, '*');
+          }
+          document.getElementById('log').textContent = 'sender sent=' + sent;
+          document.title = 'sender sent=' + sent;
+        } catch (e) {
+          document.title = 'sender error: ' + e.message;
+          return;
+        }
+        setTimeout(beat, every);
+      }
+      window.addEventListener('load', function () {
+        setTimeout(beat, 200);
+      });
+      window.SENDER = {
+        origin: location.origin,
+        sent: function () {
+          return sent;
+        },
+        stop: function () {
+          stop = true;
+        },
+      };
+    </script>
+  </body>
+</html>

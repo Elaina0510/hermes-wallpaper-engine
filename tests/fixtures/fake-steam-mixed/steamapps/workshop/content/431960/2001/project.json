@@ -1,0 +1,19 @@
+{
+  "contentrating": "Mature",
+  "file": "drive.mp4",
+  "preview": "preview.jpg",
+  "title": "Neon Drive",
+  "type": "video",
+  "general": {
+    "properties": {
+      "schemecolor": {
+        "type": "color",
+        "value": "1 0 0"
+      },
+      "schemecolor2": {
+        "type": "textinput",
+        "value": "plain"
+      }
+    }
+  }
+}

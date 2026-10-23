@@ -1,0 +1,11 @@
+{
+  "name": "wallpaper-engine",
+  "label": "Wallpaper Engine",
+  "description": "Live wallpapers behind the Hermes UI: plays Steam Wallpaper Engine video, image, web and scene wallpapers, with per-theme opacity and glass tuning, a searchable library picker and scheduled rotation.",
+  "icon": "Eye",
+  "version": "1.0.0",
+  "tab": {
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}

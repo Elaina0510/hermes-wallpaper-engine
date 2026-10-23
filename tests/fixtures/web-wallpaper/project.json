@@ -1,0 +1,31 @@
+{
+  "contentrating": "Everyone",
+  "file": "index.html",
+  "general": {
+    "properties": {
+      "schemecolor": {
+        "order": 0,
+        "text": "ui_browse_properties_scheme_color",
+        "type": "color",
+        "value": "0.1 0.2 0.3"
+      },
+      "fps": {
+        "order": 1,
+        "text": "Frame rate cap",
+        "type": "combo",
+        "value": "30"
+      },
+      "title": {
+        "order": 2,
+        "text": "Overlay title",
+        "type": "textinput",
+        "value": "default-title"
+      }
+    }
+  },
+  "preview": "preview.png",
+  "tags": ["Abstract"],
+  "title": "Fixture Web Wallpaper",
+  "type": "web",
+  "version": 1
+}

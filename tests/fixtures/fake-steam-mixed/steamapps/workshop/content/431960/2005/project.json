@@ -1,0 +1,15 @@
+{
+  "contentrating": "PG13",
+  "file": "index.html",
+  "preview": "preview.jpg",
+  "title": "Web Gallery",
+  "type": "web",
+  "general": {
+    "properties": {
+      "schemecolor": {
+        "type": "color",
+        "value": "0.847 0.725 0.713"
+      }
+    }
+  }
+}

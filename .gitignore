@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Live user state — the plugin seeds its own defaults when this is missing,
+# so a clone never carries someone's wallpaper library or their tuned sliders.
+data/config.json
+
+# Node / build noise
+node_modules/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

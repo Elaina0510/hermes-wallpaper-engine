@@ -1,0 +1,1 @@
+{"secret": "this file lives OUTSIDE any token root and must never be served"}

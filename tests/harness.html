@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WE scene bridge harness</title>
+    <!--
+      T0.3 host-page harness (tests/harness.html).
+
+      Two ways to load it, both intentional:
+
+      1. cross-origin (deployment-faithful): served by the harness static server
+         on its own port, iframe -> {mediaOrigin}/gl/host.html. This is what the
+         real plugin looks like (host UI origin !== media server origin).
+      2. same-origin (diagnostic): served by the media server itself through
+         /s/<harness-dir-token>/harness.html, so `iframe.contentWindow.__wp` is
+         readable. Only in this mode can the harness observe the renderer's own
+         state / capture() pixels. The plugin can never do this, so results from
+         this mode are labelled diagnostic in the report.
+
+      Query parameters:
+        media     (required) media server origin, e.g. http://127.0.0.1:34567
+        src       scene URL; may be absolute or a path relative to `media`
+        attack    origin of the attacker page to embed (forged we-frame sender)
+        preview   preview image URL shown on fallback
+        autostart 1 (default) | 0 - create the iframe
+        runms     how long to keep probing after load (default 12000)
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        font: 13px/1.45 ui-monospace, Consolas, monospace;
+        background: #101318;
+        color: #d8dee9;
+      }
+      #wrap {
+        display: flex;
+        gap: 12px;
+        padding: 12px;
+      }
+      #stage {
+        position: relative;
+        width: 480px;
+        height: 270px;
+        background: #000;
+        border: 1px solid #2a303a;
+        flex: 0 0 auto;
+      }
+      #stage iframe,
+      #stage img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        object-fit: cover;
+      }
+      #preview[hidden],
+      #attacker[hidden] {
+        display: none;
+      }
+      #panel {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      #kv {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 2px 10px;
+        margin: 0 0 10px;
+      }
+      #kv dt {
+        color: #7f8b9c;
+      }
+      #kv dd {
+        margin: 0;
+        word-break: break-all;
+      }
+      #report {
+        white-space: pre-wrap;
+        word-break: break-all;
+        background: #161a21;
+        border: 1px solid #232a34;
+        padding: 8px;
+        max-height: 46vh;
+        overflow: auto;
+        margin: 0;
+      }
+      .ok {
+        color: #7ee787;
+      }
+      .bad {
+        color: #ff7b72;
+      }
+      .warn {
+        color: #e3b341;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <div id="stage">
+        <img id="preview" alt="preview" hidden />
+        <div id="frameSlot"></div>
+        <iframe id="attacker" hidden></iframe>
+      </div>
+      <div id="panel">
+        <dl id="kv">
+          <dt>phase</dt>
+          <dd id="v-phase">idle</dd>
+          <dt>frames</dt>
+          <dd id="v-frames">0</dd>
+          <dt>rejected</dt>
+          <dd id="v-rejected">0</dd>
+          <dt>sceneLive</dt>
+          <dd id="v-scenelive">true</dd>
+          <dt>probe</dt>
+          <dd id="v-probe">-</dd>
+        </dl>
+        <pre id="report">starting…</pre>
+      </div>
+    </div>
+
+    <script>
+      // ---- in-page log capture (the CDP driver's console domain is flaky on
+      // Vivaldi, so the harness keeps its own buffer) ------------------------
+      window.LOGS = [];
+      (function () {
+        var push = function (level, args) {
+          try {
+            window.LOGS.push({
+              level: level,
+              text: Array.prototype.map
+                .call(args, function (a) {
+                  return typeof a === 'string' ? a : JSON.stringify(a);
+                })
+                .join(' '),
+            });
+          } catch (e) {
+            /* ignore */
+          }
+        };
+        ['log', 'info', 'warn', 'error'].forEach(function (lvl) {
+          var orig = console[lvl].bind(console);
+          console[lvl] = function () {
+            push(lvl, arguments);
+            orig.apply(null, arguments);
+          };
+        });
+        window.addEventListener('error', function (e) {
+          push('uncaught', [String(e.message) + ' @' + e.filename + ':' + e.lineno]);
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          push('unhandledrejection', [String(e.reason)]);
+        });
+      })();
+    </script>
+    <script src="./harness/bridge.js"></script>
+    <script>
+      (function () {
+        var q = new URLSearchParams(location.search);
+        var MEDIA = q.get('media') || '';
+        var SCENE = q.get('src') || '';
+        var ATTACK = q.get('attack') || '';
+        var PREVIEW = q.get('preview') || '';
+        // Trusted-origin heartbeat source (must live on the media origin).
+        var SENDER = q.get('sender') || '';
+        var SENDER_ERROR = q.get('senderError') === '1';
+        var AUTOSTART = q.get('autostart') !== '0';
+        // CONTRACT §1 #1 documents `type=canvas` as the default, but the bundle's
+        // dispatch (Xa(), offset 920010) only enters the scene chain for
+        // `type === "scene"`; `canvas` lands on onUnhandledType -> the built-in
+        // animated test card. Harness exposes it so the difference is measurable.
+        var TYPE = q.get('type') || 'scene';
+        var RUNMS = Number(q.get('runms')) || 12000;
+
+        // Measured in the bundle (mountScene, offset ~816547):
+        //   const y = e.source ?? DS(`${e.mediaBase}/${e.src}`)
+        // and DS appends each candidate in NS = ["scene.pkg", "scenes/scene.pkg",
+        // "gifscene.pkg"]. So `src` must be a *relative* base path and
+        // `mediaBase` the media origin; an absolute src yields a protocol-relative
+        // URL like //host/http://host/... and 404s. `absSrc=1` keeps the old
+        // (broken) shape so the difference can be demonstrated.
+        var ABS_SRC = q.get('absSrc') === '1';
+        if (ABS_SRC && SCENE && SCENE.indexOf('://') === -1 && MEDIA) {
+          SCENE = MEDIA + (SCENE.charAt(0) === '/' ? '' : '/') + SCENE;
+        }
+
+        var frameSlot = document.getElementById('frameSlot');
+        var previewEl = document.getElementById('preview');
+        if (PREVIEW) previewEl.src = PREVIEW;
+
+        var iframe = null;
+        var bridge = SceneBridge.createSceneBridge({
+          mediaOrigin: MEDIA || null,
+          heartbeatTimeoutMs: 10000,
+          minFramesForLive: 3,
+          // One clock for the whole page: the harness drives tick() with
+          // performance.now(), so the bridge must not default to Date.now().
+          now: function () {
+            return performance.now();
+          },
+        });
+
+        var probe = {
+          attempts: 0,
+          lastError: null,
+          sameOrigin: null,
+          wpKeys: null,
+          wpState: null,
+          canvas: null,
+          pixels: null,
+          capture: null,
+          history: [],
+        };
+
+        var before = { t0: performance.now() };
+
+        function pixelStats(cv) {
+          // 64x36 downsample into a 2D canvas and count non-black pixels.
+          // Reading a WebGL canvas this way only sees the frame if the drawing
+          // buffer is still valid; an all-zero result is reported as measured,
+          // never smoothed over.
+          try {
+            var off = document.createElement('canvas');
+            off.width = 64;
+            off.height = 36;
+            var ctx = off.getContext('2d');
+            if (!ctx) return { error: 'no-2d-context' };
+            ctx.drawImage(cv, 0, 0, off.width, off.height);
+            var d = ctx.getImageData(0, 0, off.width, off.height).data;
+            var nonBlack = 0;
+            var sum = 0;
+            var max = 0;
+            var min = 99999;
+            var colors = {};
+            var distinct = 0;
+            for (var i = 0; i < d.length; i += 4) {
+              var lum = d[i] + d[i + 1] + d[i + 2];
+              sum += lum;
+              if (lum > max) max = lum;
+              if (lum < min) min = lum;
+              if (lum > 8) nonBlack += 1;
+              // quantise to 5 bits/channel so JPEG-ish noise does not fake variety
+              var key = ((d[i] >> 3) << 10) | ((d[i + 1] >> 3) << 5) | (d[i + 2] >> 3);
+              if (!colors[key]) {
+                colors[key] = 1;
+                distinct += 1;
+              }
+            }
+            var total = d.length / 4;
+            var mean = sum / total;
+            var variance = 0;
+            for (var j = 0; j < d.length; j += 4) {
+              var l2 = d[j] + d[j + 1] + d[j + 2];
+              variance += (l2 - mean) * (l2 - mean);
+            }
+            variance = variance / total;
+            return {
+              sampled: total,
+              nonBlackPixels: nonBlack,
+              nonBlackRatio: Math.round((nonBlack / total) * 1000) / 1000,
+              meanLuma: Math.round(mean * 10) / 10,
+              minLuma: min,
+              maxLuma: max,
+              stdDevLuma: Math.round(Math.sqrt(variance) * 10) / 10,
+              distinctQuantisedColors: distinct,
+              // A uniform fill is "non-empty" but proves nothing about a scene;
+              // the assertion layer uses this flag, not just nonBlackRatio.
+              uniformFill: distinct <= 2 && Math.sqrt(variance) < 8,
+            };
+          } catch (e) {
+            return { error: String(e && e.message ? e.message : e) };
+          }
+        }
+
+        function probeOnce() {
+          probe.attempts += 1;
+          var w = null;
+          try {
+            w = iframe && iframe.contentWindow;
+          } catch (e) {
+            probe.lastError = 'contentWindow: ' + e.message;
+          }
+          if (!w) {
+            probe.history.push({ t: Math.round(performance.now()), note: 'no-contentWindow' });
+            return;
+          }
+          var doc = null;
+          try {
+            doc = w.document; // throws for a cross-origin frame
+            probe.sameOrigin = true;
+          } catch (e) {
+            probe.sameOrigin = false;
+            probe.lastError = 'SecurityError: cross-origin frame (deployment-faithful)';
+            probe.history.push({ t: Math.round(performance.now()), note: 'cross-origin' });
+            return;
+          }
+          try {
+            probe.wpKeys = w.__wp ? Object.keys(w.__wp) : null;
+            probe.wpState = w.__wp && w.__wp.getState ? w.__wp.getState() : null;
+          } catch (e) {
+            probe.lastError = 'getState: ' + e.message;
+          }
+          try {
+            var cv = doc.querySelector('canvas');
+            if (cv) {
+              var info = {
+                count: doc.querySelectorAll('canvas').length,
+                width: cv.width,
+                height: cv.height,
+                clientWidth: cv.clientWidth,
+                clientHeight: cv.clientHeight,
+                dataUrlLength: (function () {
+                  try {
+                    return cv.toDataURL().length;
+                  } catch (e) {
+                    return 'err:' + e.message;
+                  }
+                })(),
+              };
+              try {
+                // The renderer may hold a webgl1 context; asking for 'webgl2'
+                // first and 'webgl' second (or vice versa) does not disturb it —
+                // getContext returns null for a different type on a bound canvas.
+                var gl2 = null;
+                var gl1 = null;
+                try {
+                  gl2 = cv.getContext('webgl2');
+                } catch (e2) {
+                  info.webgl2Error = String(e2.message);
+                }
+                try {
+                  gl1 = gl2 ? null : cv.getContext('webgl');
+                } catch (e1) {
+                  info.webgl1Error = String(e1.message);
+                }
+                var gl = gl2 || gl1;
+                info.hasWebgl2 = !!gl2;
+                info.hasWebgl = !!gl;
+                info.contextType = gl2 ? 'webgl2' : gl1 ? 'webgl' : null;
+                if (gl) {
+                  info.drawingBufferWidth = gl.drawingBufferWidth;
+                  info.drawingBufferHeight = gl.drawingBufferHeight;
+                  info.contextLost = gl.isContextLost();
+                  info.glRenderer = gl.getParameter(gl.RENDERER);
+                  info.glVersion = gl.getParameter(gl.VERSION);
+                }
+              } catch (e) {
+                info.glError = String(e.message);
+              }
+              probe.canvas = info;
+              probe.pixels = pixelStats(cv);
+            } else {
+              probe.canvas = { count: 0 };
+              probe.pixels = null;
+            }
+          } catch (e) {
+            probe.lastError = 'canvas: ' + e.message;
+          }
+          try {
+            if (probe.wpKeys) {
+              probe.wpExtra = {
+                quality: w.__wp.getQuality ? w.__wp.getQuality() : null,
+                occlusion: w.__wp.getOcclusion ? w.__wp.getOcclusion() : null,
+                props: w.__wp.getProperties ? Object.keys(w.__wp.getProperties() || {}) : null,
+              };
+            }
+          } catch (e) {
+            probe.lastError = 'wpExtra: ' + e.message;
+          }
+          try {
+            var url = w.__wp && w.__wp.capture ? w.__wp.capture() : null;
+            probe.capture = url ? { length: url.length, prefix: url.slice(0, 32) } : null;
+          } catch (e) {
+            probe.lastError = 'capture: ' + e.message;
+          }
+          probe.history.push({
+            t: Math.round(performance.now()),
+            phase: bridge.state().phase,
+            frames: bridge.state().frames,
+          });
+        }
+
+        // DOM projection of the bridge state. Kept separate from render() so the
+        // evidence bundle can sync the DOM *without* recursing through getReport().
+        function syncDom() {
+          var s = bridge.state();
+          document.getElementById('v-phase').textContent = s.phase;
+          document.getElementById('v-frames').textContent = String(s.frames);
+          document.getElementById('v-rejected').textContent = String(s.rejected.total);
+          document.getElementById('v-scenelive').textContent = String(s.sceneLive);
+          document.getElementById('v-probe').textContent =
+            probe.sameOrigin === null
+              ? 'pending'
+              : probe.sameOrigin
+                ? 'same-origin: canvas=' +
+                  (probe.canvas ? probe.canvas.count : 0) +
+                  ' capture=' +
+                  (probe.capture ? probe.capture.length : 0)
+                : 'cross-origin (opaque)';
+          document.body.setAttribute('data-phase', s.phase);
+          document.body.setAttribute('data-frames', String(s.frames));
+          document.body.setAttribute('data-rejected', String(s.rejected.total));
+          document.body.setAttribute('data-scene-live', String(s.sceneLive));
+          document.title =
+            'harness phase=' + s.phase + ' frames=' + s.frames + ' rejected=' + s.rejected.total;
+        }
+
+        function render() {
+          syncDom();
+          document.getElementById('report').textContent = JSON.stringify(getReport(), null, 2);
+        }
+
+        function getReport() {
+          var s = bridge.state();
+          var dt = performance.now() - before.t0;
+          return {
+            mode: {
+              mediaOrigin: MEDIA,
+              pageOrigin: location.origin,
+              crossOrigin:
+                !!MEDIA && MEDIA.replace(/\/+$/, '') !== location.origin,
+              iframeSrc: iframe ? iframe.src : null,
+              type: TYPE,
+              sceneSrc: SCENE,
+              attackOrigin: ATTACK || null,
+              sender: SENDER || null,
+            },
+            bridge: s,
+            heartbeat: {
+              frames: s.frames,
+              minFramesForLive: 3,
+              elapsedMs: Math.round(dt),
+              note:
+                s.frames === 0
+                  ? 'no {op:"we-frame"} received from the render page'
+                  : 'heartbeats received',
+            },
+            probe: probe,
+            dom: {
+              phase: document.body.getAttribute('data-phase'),
+              frames: document.body.getAttribute('data-frames'),
+              rejected: document.body.getAttribute('data-rejected'),
+              sceneLive: document.body.getAttribute('data-scene-live'),
+              title: document.title,
+            },
+            logs: window.LOGS.slice(-60),
+          };
+        }
+
+        window.HARNESS = {
+          getReport: getReport,
+          bridge: bridge,
+          probe: probe,
+          iframe: function () {
+            return iframe;
+          },
+          // Used by T16b: forge traffic from *this* page's own origin, which is
+          // not mediaOrigin in the cross-origin configuration.
+          forgeFromSelf: function (n) {
+            var count = n || 5;
+            for (var i = 0; i < count; i += 1) {
+              window.postMessage({ op: 'we-frame', t: performance.now() }, '*');
+            }
+            // These two must be dropped for the same reason, and an `error` from a
+            // foreign origin must not be able to force the preview fallback.
+            window.postMessage({ op: 'error', message: 'forged-error-from-self' }, '*');
+            window.postMessage({ op: 'setPaused', v: true }, '*');
+            return count + 2;
+          },
+          /**
+           * Full T16b/T16-lifecycle evidence bundle. Async because postMessage is
+           * delivered on a later task: the forgery has to be observed *after* it
+           * was posted, on both sides.
+           */
+          evidence: function () {
+            var waitMs = 1500;
+            var before = bridge.state();
+            // Only meaningful when this page is *not* on the media origin: a
+            // same-origin page is a trusted sender by definition, so forging from
+            // it must be accepted (that is the accept half of the gate).
+            var canForge = location.origin !== String(MEDIA || '').replace(/\/+$/, '');
+            var forged = canForge ? this.forgeFromSelf() : 0;
+            var self = this;
+            return new Promise(function (resolve) {
+              setTimeout(function () {
+                var afterForgery = bridge.state();
+                // Two consecutive failures (§9): first from the live/booting
+                // state, second after an explicit retry().
+                bridge.tick(performance.now() + 60000);
+                var fail1 = bridge.state();
+                bridge.retry();
+                bridge.tick(performance.now() + 60000);
+                var fail2 = bridge.state();
+                syncDom(); // make the reported DOM agree with the final state
+                resolve({
+                  before: before,
+                  afterForgery: afterForgery,
+                  selfForgedMessages: forged,
+                  selfForgeSkipped: canForge ? null : 'page origin === mediaOrigin (trusted)',
+                  failure1: fail1,
+                  failure2: fail2,
+                  report: self.getReport(),
+                });
+              }, waitMs);
+            });
+          },
+          // Force the 10 s heartbeat watchdog without waiting 10 s.
+          // Full capture (data URL) for visual evidence; only works same-origin.
+          captureFull: function () {
+            try {
+              var w = iframe.contentWindow;
+              return w.__wp && w.__wp.capture ? w.__wp.capture() : null;
+            } catch (e) {
+              return 'err:' + e.message;
+            }
+          },
+          canvasHtml: function () {
+            try {
+              var d = iframe.contentWindow.document;
+              return {
+                bodyHtml: d.body.innerHTML.slice(0, 4000),
+                headHtml: d.head.innerHTML.slice(0, 2000),
+              };
+            } catch (e) {
+              return 'err:' + e.message;
+            }
+          },
+          forceTimeout: function () {
+            bridge.tick(performance.now() + 60000);
+            render();
+            return bridge.state();
+          },
+          render: render,
+        };
+
+        bridge.onChange(render);
+
+        if (AUTOSTART) {
+          var hostSrc = SceneBridge.buildHostSrc({
+            origin: MEDIA,
+            type: TYPE,
+            src: SCENE,
+            fit: 'cover',
+            sceneFps: 15,
+            muted: true,
+            opaque: true,
+            mediaBase: MEDIA || null,
+          });
+          iframe = document.createElement('iframe');
+          iframe.id = 'we-frame';
+          iframe.allow = 'autoplay';
+          iframe.src = hostSrc;
+          frameSlot.appendChild(iframe);
+        }
+
+        if (SENDER) {
+          var snd = document.createElement('iframe');
+          snd.id = 'we-sender';
+          snd.hidden = true;
+          snd.src = SENDER + (SENDER.indexOf('?') === -1 ? '?' : '&') + 'error=' + (SENDER_ERROR ? '1' : '0');
+          document.body.appendChild(snd);
+        }
+
+        if (ATTACK) {
+          var atk = document.getElementById('attacker');
+          atk.hidden = false;
+          atk.id = 'attacker';
+          atk.width = '160';
+          atk.height = '90';
+          atk.style.cssText =
+            'position:absolute;right:0;bottom:0;width:120px;height:60px;opacity:.25';
+          atk.src = ATTACK;
+        }
+
+        bridge.start(window);
+        render();
+        setInterval(function () {
+          probeOnce();
+          bridge.tick();
+          render();
+        }, 250);
+        setTimeout(render, RUNMS);
+      })();
+    </script>
+  </body>
+</html>
