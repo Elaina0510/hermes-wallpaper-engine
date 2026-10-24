@@ -69,7 +69,7 @@ cd <HERMES_HOME>/plugins/wallpaper-engine
 python desktop/build.py
 ```
 
-- 期望输出：`built: ... from 6 file(s), 300680 bytes` + `sha256: 87054b3e…`。
+- 期望输出：`built: ... from 6 file(s), 305182 bytes` + `sha256: e0eec48b…`。
 - 若你改过 `desktop/src/*.js`，这一步必跑；产物变了就说明源码真的生效了。
 - `build.py` 只用标准库，任何 Python 3 都能跑（本机用 3.12.10 实测；更早版本未实测）。
 
@@ -320,8 +320,8 @@ python desktop/build.py --src desktop/src --out desktop/plugin.js
 当前产物（本机实测）：
 
 ```text
-built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 300680 bytes
-sha256: 87054b3e60955b96dceb3d39ad226cea21c1f3c16f00b5a06db054f227e91bd6
+built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 305182 bytes
+sha256: e0eec48b975fd1714741193b6f34f3f94ed76a74a05553d48373f089327c74b7
 ```
 
 同一份源码连跑两次，sha256 完全一致（已实测 3 次：产物落盘 + 两次写 scratch）。树里的 `desktop/plugin.js` 与重新构建的字节完全相同，说明它是当前源码的产物，不是中间态残留。
@@ -334,7 +334,7 @@ sha256: 87054b3e60955b96dceb3d39ad226cea21c1f3c16f00b5a06db054f227e91bd6
 
 | 锚点 | 怎么验 | 预期看到什么 | 可验方式 |
 |---|---|---|---|
-| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `87054b3e…` | 命令行 ✅ |
+| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `e0eec48b…` | 命令行 ✅ |
 | 产物语法（T12） | `node --check desktop/plugin.js` | 无输出、exit 0 | 命令行 ✅ |
 | `/status` 200 + 7 键 | `PYTHONDONTWRITEBYTECODE=1 <venv>/python -m pytest tests/test_plugin_api.py -p no:cacheprovider -k status` | 通过；键集恰为 `ok version engineFound installDir libraryDirs mediaOrigin mediaError` | 命令行 ✅（TestClient，不经真网关） |
 | `/library` 返回条目 | `... -k library` | 通过；伪造 Steam 树下返回条目，`kind/path/preview` 正确 | 命令行 ✅（用 `tests/fixtures/fake-steam*`）；真实库需真机 |
@@ -377,8 +377,9 @@ PYTHONDONTWRITEBYTECODE=1 \
 | 某个 Steam 库的壁纸全不见，其它库正常 | 该库路径不可读（权限/盘符已卸载） | 该库被跳过、原因记进 `/library` 的 `errors[]`。修权限或从库里移除该根；不会 500 |
 | 某张壁纸一直不出现，其它正常 | 它的 `project.json` 损坏/字段缺失 | 跳过该项目并记 `errors[]`。手工打开该 `project.json` 看是否合法 JSON；`file` 字段缺失的条目会被直接丢弃（设计 §5.1） |
 | 壁纸完全不显示，只剩玻璃效果 | 媒体服务端口被占：启动重试 3 次（`START_RETRIES = 3`）仍失败 → 降级为「仅玻璃」 | `/status` 看 `mediaOrigin` 是否为 `null`，`mediaError` 有原因字符串。释放端口冲突后需要重启 serve；降级状态不会自愈 |
-| 选了场景壁纸，黑屏/不出画面 | 渲染器没起来：`scene.pkg` 缺失、包损坏、WebGL 不可用 | 先看 `GET <mediaOrigin>/diag/recent`（渲染器唯一的上报通道，`lvl=error` 那几条就是原因）；确认 `play.url` 是 `/s/<token>/scene.pkg` 且该 token 能 200。图层在 load 前有 2s 闸门，超时会自动回退 preview 图 | 换一张场景，或看 `data/config.json` 的 `sceneLiveFps`（只接受 15/30/60）。**注意 scene 没有心跳通道**（CONTRACT §2.2），"在播"只由 iframe load + 闸门判定 |
-| 选了网页壁纸，白屏/黑屏 | 作者页或 shim 没跑起来 | 看 `GET <mediaOrigin>/diag/recent`；确认 `play.url` 的 `/s/<token>/index.html` 能 200，且响应 HTML 里含 `__weShimInstalled`/`web-shim` 注入。图层 2s 闸门超时会回退 preview | 换一张网页壁纸；`webSandbox` 不要设 `strict`（本插件不发该参数） |
+| 选了场景壁纸，黑屏/不出画面 | 渲染器没起来：`scene.pkg` 缺失、包损坏、WebGL 不可用 | 先看 `GET <mediaOrigin>/diag/recent`（渲染器唯一的上报通道，`lvl=error` 那几条就是原因）；确认 `play.url` 是 `/s/<token>/scene.pkg` 且该 token 能 200。图层在 load 前有闸门（视频/图片 2s，场景/网页 15s），超时会回退 preview 图并自动重试两次 | 换一张场景，或看 `data/config.json` 的 `sceneLiveFps`（只接受 15/30/60）。**注意 scene 没有心跳通道**（CONTRACT §2.2），"在播"只由 iframe load + 闸门判定 |
+| 选了网页壁纸，白屏/黑屏 | 作者页或 shim 没跑起来 | 看 `GET <mediaOrigin>/diag/recent`；确认 `play.url` 的 `/s/<token>/index.html` 能 200，且响应 HTML 里含 `__weShimInstalled`/`web-shim` 注入。图层闸门（网页/场景 15s）超时会回退 preview 并自动重试 | 换一张网页壁纸；`webSandbox` 不要设 `strict`（本插件不发该参数） |
+| 重开桌面端后壁纸整个被放大/只剩上半身特写，重新选一次壁纸就正常 | 冷启动时场景图层没抢到渲染器，降级成了 **preview 图**；WE 的 preview 常见是 1:1（实测 1024×1024 对应 3840×2160 场景），按封面铺满会把方形图放大约 2.5 倍、上下各裁 22% | 2026-10-24 已修：场景/网页闸门放宽到 15s，降级后 5s 自动重试（最多 2 次），预览图改用 `contain` 不再裁切。若仍复现，看 `/diag/recent` 是否有该场景的记录——完全没有记录说明 iframe 根本没起来 | 升级插件后退出并重开桌面端 |
 | 面板一打开就报配置错误，或设置改动不生效 | `data/config.json` 损坏/是未来版本 | 插件会把坏文件移成 `data/config.bad-<YYYYmmdd-HHMMSS>-<mmm>.json`（未来版本是 `config.future-…json`）并用默认值重建。恢复：从备份文件抄回你需要的字段，或直接让面板重新调 |
 | 关掉插件后壁纸还在 / 玻璃没还原 | 「Plugins 页开关」与 `settings.enabled` 是两个独立开关（§7.6） | 先下面板里的「启用壁纸」开关（还原 token、移除图层），再去 Plugins 页关模块。卸载（删目录）等价于前者关闭 + 物化副本清理 |
 | 媒体请求 403 | 路径逃逸被围栏拦下（`..`、绝对路径、盘符、URL 编码绕过、symlink） | 这是**正确**行为，不是 bug。检查壁纸目录里是否有指向库外的符号链接；`/m` 的失效 token 是 404 而不是 403 |
@@ -444,7 +445,7 @@ node --test tests/frontend/00-core.test.mjs \
            tests/frontend/99-register.test.mjs
 ```
 
-本机实测：`tests 194 / pass 194 / fail 0`（各套件 30 + 52 + 35 + 28 + 31 + 18）。`10-layer` 从 32 涨到 38：6 条钉住背景行为——**图层挂载期必须把四层都置 transparent，teardown 逐字还原**：`<html>`（宿主 boot 脚本钉实色）、`<body>`（`var(--ui-chat-surface-background)`）、`#root` 第一个子 div（`bg-background` + `h-screen`）、`[data-contrib-shell]` div（`bg-(--ui-bg-chrome)` + `h-screen w-screen`）。宿主自己的注释就写明后两者是 app shell 的两个 full-window opaque painters，它靠 `[data-hermes-glass]` 规则清掉，而我们的玻璃只写 token 值、不走那条路，所以两层都得自己清。任何一层漏掉，壁纸都被盖住而 video 自身完全正常（readyState 4、有尺寸、无 error）——2026-10-21 逐个排查出来的。2026-10-22 再涨到 44：6 条钉住**外观链**（filter/不透明度落在 media、scrim 膜层挂在 root 下且 z-index 1、滑杆拖动走 `weLayerSync` 热更新、CSS 兜底规则必须带 `:not([data-we-glass])`）；`30-glass` 从 33 涨到 35，2 条钉住 `<html>` 的 `data-we-glass` 归属标记（start 置位 / stop 清除 / 敌意文档不抛）。
+本机实测：`tests 198 / pass 198 / fail 0`（各套件 30 + 56 + 35 + 28 + 31 + 18）。`10-layer` 从 32 涨到 38：6 条钉住背景行为——**图层挂载期必须把四层都置 transparent，teardown 逐字还原**：`<html>`（宿主 boot 脚本钉实色）、`<body>`（`var(--ui-chat-surface-background)`）、`#root` 第一个子 div（`bg-background` + `h-screen`）、`[data-contrib-shell]` div（`bg-(--ui-bg-chrome)` + `h-screen w-screen`）。宿主自己的注释就写明后两者是 app shell 的两个 full-window opaque painters，它靠 `[data-hermes-glass]` 规则清掉，而我们的玻璃只写 token 值、不走那条路，所以两层都得自己清。任何一层漏掉，壁纸都被盖住而 video 自身完全正常（readyState 4、有尺寸、无 error）——2026-10-21 逐个排查出来的。2026-10-22 再涨到 44：6 条钉住**外观链**（filter/不透明度落在 media、scrim 膜层挂在 root 下且 z-index 1、滑杆拖动走 `weLayerSync` 热更新、CSS 兜底规则必须带 `:not([data-we-glass])`）；`30-glass` 从 33 涨到 35，2 条钉住 `<html>` 的 `data-we-glass` 归属标记（start 置位 / stop 清除 / 敌意文档不抛）。2026-10-24 涨到 56：4 条钉住**冷启动恢复**——场景/网页的 content gate 放宽到 15s（2s 会把还在 boot 的渲染页判死，降级后又是粘性的，观感就是「重开桌面端壁纸被放大」）、降级后 5s 自动重试且只重试两次、重试耗尽停在预览图、预览图改 `contain`（1:1 preview 按 cover 会被放大约 2.5 倍并裁掉上下 22%）。
 
 - **必须逐个传 `.mjs` 文件，不能传目录**。`node --test tests/frontend` 会把这个目录当文件，实测直接失败：`test at tests\frontend:1:1 ✖ tests\frontend — 'test failed'`。
 - dev-only 依赖：`react` / `react-dom` 19.2.7、`jsdom` 29.1.1，从 Hermes 桌面树（默认 `<HERMES_HOME>/hermes-agent`）解析；可用 `WE_NODE_MODULES=<dir>` 覆盖。插件运行时**不**依赖它们。
@@ -464,9 +465,9 @@ node --test tests/frontend/00-core.test.mjs \
 
 ```bash
 cd <HERMES_HOME>/plugins/wallpaper-engine
-python desktop/build.py                     # 期望 sha256: 87054b3e…（改过源码则会变）
+python desktop/build.py                     # 期望 sha256: e0eec48b…（改过源码则会变）
 node --check desktop/plugin.js               # 无输出
-node --test tests/frontend/*.test.mjs        # 194/194（shell 展开成具体文件，仍不是目录）
+node --test tests/frontend/*.test.mjs        # 198/198（shell 展开成具体文件，仍不是目录）
 find . -name '__pycache__' -o -name '.pytest_cache' -o -name '*.pyc' -o -name '*.tmp'   # 必须为空
 ```
 

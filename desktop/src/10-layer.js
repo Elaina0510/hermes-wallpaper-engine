@@ -71,6 +71,23 @@ const WE_LAYER_OUT_CLASS = 'we-layer--switch-out'
 /** §7.4: `loading --(2s, no onload/onloadeddata)--> fallback`. */
 const WE_LAYER_CONTENT_TIMEOUT_MS = 2000
 
+/** Scene / web get their own, longer budget. Their media child is an iframe
+ *  pointing at `/gl/host.html`, which has to boot a whole renderer document
+ *  (parse `scene.pkg`, decode textures) before the frame's `load` arrives. On a
+ *  cold start that competes with the host's own boot, and the 2s gate fired
+ *  first — the live layer was destroyed and the still preview took over. The
+ *  fallback is sticky by design, so the wallpaper stayed a preview until the
+ *  user re-picked it. Measured 2026-10-24: a healthy scene needs well over 2s
+ *  right after the desktop window opens. */
+const WE_LAYER_HEAVY_TIMEOUT_MS = 15000
+
+/** Auto-retry a failed live layer. A cold start can lose the race with the
+ *  media server (origin not published yet) or with the renderer; the sticky
+ *  fallback then hides that it would have worked a few seconds later. Bounded
+ *  so a genuinely broken wallpaper still settles on its preview. */
+const WE_LAYER_RETRY_DELAY_MS = 5000
+const WE_LAYER_RETRY_MAX = 2
+
 /** F24: fade base. There is no speed-tier field in the accepted settings
  *  document, so the base is used as-is (documented trade-off, see the report). */
 const WE_LAYER_FADE_MS = 1800
@@ -210,6 +227,12 @@ const weLayerRuntime = {
   nodes: [],
   pending: null,
   gate: null,
+  /** Bounded auto-retry of a failed live layer (see WE_LAYER_RETRY_MAX).
+   *  `retryTimer` is the disposer of the armed timer; `retryItemId` scopes the
+   *  counter to one wallpaper so a new selection starts from zero. */
+  retryTimer: null,
+  retryCount: 0,
+  retryItemId: null,
   currentId: null,
   /** id of an item we deliberately refused, so a store notification about the
    *  same item cannot re-run the refusal (and re-raise its toast) in a loop. */
@@ -900,7 +923,12 @@ function weLayerApplySettings(node, settings) {
   }
   const media = node.media
   const s = settings || weLayerSettings()
-  media.style.objectFit = s.objectFit
+  // A fallback still is the gallery preview, not the wallpaper. WE previews are
+  // commonly 1:1 (measured 2026-10-24: 1024×1024 for a 3840×2160 scene), so
+  // `cover` in a 16:9 window upscaled it ~2.5× and cut 44% of the height — on
+  // screen that reads as "the wallpaper suddenly zoomed in". `contain` keeps the
+  // preview whole; when the preview already matches the window it is identical.
+  media.style.objectFit = node.fallback ? 'contain' : s.objectFit
   media.style.transform = s.flip ? 'scaleX(-1)' : ''
   // Look chain (§8.2 step 7). The filter and the wallpaper opacity land on the
   // MEDIA element, never on the layer box: the box opacity is the F24 stacking
@@ -1137,6 +1165,94 @@ function weLayerClearGate(rt) {
 }
 
 /**
+ * How long this node gets before "not on screen in time" counts as a failure.
+ * A still or a video signals readiness itself and quickly; a scene/web iframe
+ * has to boot a renderer document first and is measured in seconds.
+ *
+ * @param {Object} node
+ * @returns {number} milliseconds
+ */
+function weLayerGateMs(node) {
+  return node && (node.kind === 'scene' || node.kind === 'web')
+    ? WE_LAYER_HEAVY_TIMEOUT_MS
+    : WE_LAYER_CONTENT_TIMEOUT_MS
+}
+
+/**
+ * Drop the armed auto-retry. `resetCount` also forgets the attempts, which is
+ * what a new user selection and a successful live activation both want.
+ *
+ * @param {Object} rt
+ * @param {boolean} [resetCount]
+ */
+function weLayerClearRetry(rt, resetCount) {
+  const dispose = rt.retryTimer
+  rt.retryTimer = null
+  if (typeof dispose === 'function') {
+    try {
+      dispose()
+    } catch (error) {
+      // ignore
+    }
+  }
+  if (resetCount) {
+    rt.retryCount = 0
+    rt.retryItemId = null
+  }
+}
+
+/**
+ * Arm one bounded retry of the live layer after it degraded to the still
+ * preview. Without this the fallback is permanent: `currentId` is kept on
+ * purpose (so a store notification cannot loop on a broken wallpaper), which
+ * also means nothing ever rebuilds the live layer — that is why a cold-start
+ * miss left the preview (a square thumbnail, cropped by `cover`) on screen
+ * until the user re-picked the wallpaper by hand.
+ *
+ * @param {Object} rt
+ * @param {*} item
+ * @param {string} reason
+ */
+function weLayerArmRetry(rt, item, reason) {
+  weLayerClearRetry(rt, false)
+  if (!rt.mounted || rt.disposed || !item || typeof item.id !== 'string' || !item.id) {
+    return
+  }
+  if (rt.retryItemId !== item.id) {
+    rt.retryItemId = item.id
+    rt.retryCount = 0
+  }
+  if (rt.retryCount >= WE_LAYER_RETRY_MAX) {
+    weLayerNote(rt, 'retry-exhausted:' + item.id + ':' + reason)
+    return
+  }
+  rt.retryTimer = weLayerSetTimeout(
+    rt,
+    function onFallbackRetry() {
+      rt.retryTimer = null
+      if (!rt.mounted || rt.disposed) {
+        return
+      }
+      // The selection moved on, or a live load is already in flight: not our race.
+      if (rt.currentId !== item.id) {
+        return
+      }
+      if (rt.pending && !rt.pending.fallback) {
+        return
+      }
+      const top = weLayerTop(rt)
+      if (top && !top.fallback && top.state === 'active') {
+        return
+      }
+      rt.retryCount += 1
+      weLayerNote(rt, 'retry:' + item.id + ':' + rt.retryCount)
+      weLayerReload(rt.ctx)
+    },
+    WE_LAYER_RETRY_DELAY_MS,
+  )
+}
+
+/**
  * Arm the 2s content gate for one node. Expiry means "not on screen in time",
  * which is the same event as a load error: both go to `fallback`.
  *
@@ -1157,7 +1273,7 @@ function weLayerArmReveal(rt, node) {
       weLayerNote(rt, 'gate-timeout:' + node.id)
       weLayerContentFailed(rt, node, 'timeout')
     },
-    WE_LAYER_CONTENT_TIMEOUT_MS,
+    weLayerGateMs(node),
   )
 }
 
@@ -1201,6 +1317,9 @@ function weLayerContentReady(rt, node) {
  */
 function weLayerActivate(rt, node) {
   weLayerClearGate(rt)
+  // The live layer is on screen: forget the attempts, so a later failure of a
+  // different wallpaper gets the full budget again.
+  weLayerClearRetry(rt, true)
   rt.pending = null
   node.state = 'active'
   node.retired = false
@@ -1324,6 +1443,7 @@ function weLayerFallback(rt, item, reason) {
     weSet({ layer: WE_LAYER.FALLBACK })
   }
   weLayerNote(rt, 'fallback:' + reason)
+  weLayerArmRetry(rt, item, reason)
 }
 
 /**
@@ -1701,6 +1821,7 @@ function weLayerMount(ctx) {
   rt.scrim = null
   rt.pending = null
   rt.gate = null
+  weLayerClearRetry(rt, true)
   rt.currentId = null
   rt.skippedId = null
   rt.mode = 'idle'
@@ -1732,6 +1853,7 @@ function weLayerDispose() {
   const rt = weLayerRuntime
   rt.generation += 1
   weLayerClearGate(rt)
+  weLayerClearRetry(rt, true)
   weLayerDetachWindowListeners(rt)
   if (rt.unsubscribe) {
     try {

@@ -258,10 +258,10 @@ function fireTimer(entry) {
   entry.fn()
 }
 
-/** Fire the product's own 2s content gate — no constant is changed for the test. */
-function fireContentGate(ctx) {
-  const gate = liveTimers(ctx, 2000)[0]
-  assert.ok(gate, `expected one armed 2s gate, timers=${JSON.stringify(ctx.timers.map((t) => t.ms))}`)
+/** Fire the product's own content gate — no constant is changed for the test. */
+function fireContentGate(ctx, ms = 2000) {
+  const gate = liveTimers(ctx, ms)[0]
+  assert.ok(gate, `expected one armed ${ms}ms gate, timers=${JSON.stringify(ctx.timers.map((t) => t.ms))}`)
   fireTimer(gate)
 }
 
@@ -632,6 +632,54 @@ test('no media origin and no preview: idle + toast naming the media server', () 
   assert.equal(env.storeLayer(), 'idle')
   assert.equal(env.layers().length, 0)
   assert.match(env.core.weGetState().toast.text, /媒体服务不可用/)
+})
+
+// --------------------------------------------------------------------------- //
+// cold-start recovery: heavy gate + bounded auto-retry
+// --------------------------------------------------------------------------- //
+
+test('a scene gets the 15s gate; a video keeps the 2s budget', () => {
+  const scene = setup({ items: [sceneItem()], config: makeConfig({ currentId: 'id-scene' }) })
+  assert.equal(liveTimers(scene.ctx, 15000).length, 1, 'the scene gate must be the long one')
+  assert.equal(liveTimers(scene.ctx, 2000).length, 0, 'a scene must not be judged by the 2s budget')
+
+  const video = setup()
+  assert.equal(liveTimers(video.ctx, 2000).length, 1)
+  assert.equal(liveTimers(video.ctx, 15000).length, 0)
+})
+
+test('a fallback re-arms one retry and the live layer comes back by itself', () => {
+  const env = setup({ items: [makeItem({ preview: 'C:\\lib\\2001\\preview.jpg' })] })
+  fireContentGate(env.ctx)
+  assert.equal(env.storeLayer(), 'fallback')
+
+  const retry = liveTimers(env.ctx, 5000)
+  assert.equal(retry.length, 1, 'exactly one retry armed after a transient failure')
+  fireTimer(retry[0])
+
+  assert.equal(env.storeLayer(), 'loading', 'the retry rebuilds the live layer, not the preview')
+  assert.ok(env.doc.querySelector('.we-layer--video video'), 'the live <video> is back')
+  assert.ok(env.state().notes.some((note) => note.indexOf('retry:') === 0))
+})
+
+test('auto-retry stops after two attempts so a broken wallpaper settles', () => {
+  const env = setup({ items: [makeItem({ preview: 'C:\\lib\\2001\\preview.jpg' })] })
+  fireContentGate(env.ctx)
+  fireTimer(liveTimers(env.ctx, 5000)[0])
+  fireContentGate(env.ctx)
+  fireTimer(liveTimers(env.ctx, 5000)[0])
+  fireContentGate(env.ctx)
+
+  assert.equal(env.storeLayer(), 'fallback')
+  assert.equal(liveTimers(env.ctx, 5000).length, 0, 'a third retry would loop on a broken wallpaper')
+  assert.ok(env.state().notes.some((note) => note.indexOf('retry-exhausted:') === 0))
+})
+
+test('the fallback preview is contained, never cover-cropped like a wallpaper', () => {
+  const env = setup({ items: [makeItem({ preview: 'C:\\lib\\2001\\preview.jpg' })] })
+  fireContentGate(env.ctx)
+  const img = env.doc.querySelector('.we-layer--fallback img')
+  assert.equal(img.style.objectFit, 'contain', 'a 1:1 preview must not be blown up by cover')
 })
 
 // --------------------------------------------------------------------------- //
@@ -1274,7 +1322,7 @@ test('scene: a play url that is not a token dir falls back to the preview', () =
   assert.equal(frame.getAttribute('src'), null, 'no src without a token')
   assert.ok(env.state().notes.some((note) => note.indexOf('scene-url-missing') !== -1))
 
-  fireContentGate(env.ctx)
+  fireContentGate(env.ctx, 15000)
   const fallback = env.layers().find((layer) => layer.classList.contains('we-layer--fallback'))
   assert.ok(fallback, 'the gate timeout degrades to the preview')
 })
