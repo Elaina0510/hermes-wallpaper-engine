@@ -88,6 +88,19 @@ const WE_LAYER_HEAVY_TIMEOUT_MS = 15000
 const WE_LAYER_RETRY_DELAY_MS = 5000
 const WE_LAYER_RETRY_MAX = 2
 
+/** A scene/web frame must not boot its renderer while the window has no
+ *  viewport. The vendor render page measures its canvas ONCE, from the frame
+ *  viewport at boot, and has no resize path for a scene
+ *  (`y0` → `clientWidth || innerWidth`, clamped to 1). Booting inside a
+ *  zero-area window therefore freezes a 1x1 canvas for the whole session:
+ *  iframe `load` still fires, so the gate passes, the layer reports `active`,
+ *  and nothing is drawn. Measured 2026-10-26 21:42 on a cold start:
+ *  `fit cover: view 2160x2160 scene 3840x2160 canvas 1x1`.
+ *  So the frame waits for a real viewport first. Bounded so a permanently
+ *  hidden window still ends up with the preview instead of nothing. */
+const WE_LAYER_FRAME_BOX_WAIT_MS = 10000
+const WE_LAYER_FRAME_BOX_POLL_MS = 100
+
 /** F24: fade base. There is no speed-tier field in the accepted settings
  *  document, so the base is used as-is (documented trade-off, see the report). */
 const WE_LAYER_FADE_MS = 1800
@@ -234,6 +247,14 @@ const weLayerRuntime = {
   retryCount: 0,
   retryItemId: null,
   currentId: null,
+  /** Media-server origin the mounted node's URLs were built from. The media
+   *  server binds an ephemeral port per backend process, so a cold start that
+   *  mounts from the localStorage snapshot uses the PREVIOUS process's origin —
+   *  a dead port. The frame then loads a chrome-error page (its `load` event
+   *  still fires), the layer reports `active` over nothing, and the sticky
+   *  same-id guard never rebuilds it. `weLayerSync` compares this against the
+   *  store and remounts once the bootstrap response brings the live origin. */
+  originUsed: '',
   /** id of an item we deliberately refused, so a store notification about the
    *  same item cannot re-run the refusal (and re-raise its toast) in a loop. */
   skippedId: null,
@@ -741,20 +762,24 @@ function weLayerCreateNode(item, fallback) {
   media.style.width = '100%'
   media.style.height = '100%'
   media.style.pointerEvents = 'none'
+  let hostUrl = null
   if (kind === 'scene' || kind === 'web') {
     // Both kinds are the vendor's WebWallGL render page (CONTRACT §1): scene is
     // WebGL, web is an author-HTML iframe the render page owns. It is
     // cross-origin to the app, so nothing here may reach into it; liveness is
     // the iframe `load` event plus the content timeout.
+    //
+    // The src is NOT assigned here: this element is still detached, so the
+    // frame would boot with a 0x0 viewport and freeze a 1x1 canvas (see
+    // WE_LAYER_FRAME_BOX_WAIT_MS). `weLayerBootFrame` navigates it once the
+    // node is in the document and the window has a viewport.
     media.setAttribute('frameborder', '0')
     media.setAttribute('scrolling', 'no')
     media.setAttribute('allow', 'autoplay')
     media.setAttribute('title', '')
     media.style.border = '0'
-    const hostUrl = kind === 'web' ? weLayerWebUrl(null, item) : weLayerSceneUrl(null, item)
-    if (hostUrl) {
-      media.setAttribute('src', hostUrl)
-    } else {
+    hostUrl = kind === 'web' ? weLayerWebUrl(null, item) : weLayerSceneUrl(null, item)
+    if (!hostUrl) {
       weLayerNote(weLayerRuntime, kind + '-url-missing')
     }
   } else if (kind === 'video') {
@@ -779,6 +804,14 @@ function weLayerCreateNode(item, fallback) {
     fallback: !!fallback,
     el,
     media,
+    /** Render-page URL for scene/web; the frame is navigated by
+     *  `weLayerBootFrame` once the node is in the document. */
+    hostUrl,
+    /** `'<w>x<h>'` of the frame at boot, `''` before it boots. A `'0x0'` here
+     *  means the renderer measured a 1x1 canvas; see `weLayerFrameBox`. */
+    bootBox: '',
+    /** One-shot re-boot after a zero-box boot (never loops). */
+    frameRebooted: false,
     state: 'loading',
     retired: false,
     generation: 0,
@@ -795,6 +828,93 @@ function weLayerCreateNode(item, fallback) {
  */
 function weLayerRound(value) {
   return Math.round(value * 1000) / 1000
+}
+
+/**
+ * The **window** viewport, which is what an iframe's `100%` box resolves to
+ * once the host shell has been laid out.
+ *
+ * `0` here is the fatal case: the vendor render page reads
+ * `container.clientWidth || window.innerWidth` once, so a zero viewport is a
+ * 1x1 canvas for the rest of the session (see WE_LAYER_FRAME_BOX_WAIT_MS).
+ *
+ * @returns {{w: number, h: number}}
+ */
+function weLayerViewportBox() {
+  if (typeof window === 'undefined') {
+    return { w: 0, h: 0 }
+  }
+  return {
+    w: Math.max(0, Math.round(Number(window.innerWidth) || 0)),
+    h: Math.max(0, Math.round(Number(window.innerHeight) || 0)),
+  }
+}
+
+/** @param {*} media @returns {{w: number, h: number}} laid-out frame box */
+function weLayerFrameBox(media) {
+  return {
+    w: Math.max(0, Math.round(Number(media && media.clientWidth) || 0)),
+    h: Math.max(0, Math.round(Number(media && media.clientHeight) || 0)),
+  }
+}
+
+/**
+ * Navigate a scene/web iframe — but only when there is a viewport to measure.
+ *
+ * The node has to be in the document first (the caller appends it), otherwise
+ * the frame boots inside a 0x0 box. If the window itself has no viewport yet
+ * (cold start: the host window is still hidden while the shell mounts), wait
+ * for one, then boot. `onBoot` runs in the same turn the frame is navigated so
+ * the content gate starts counting from the load, not from the wait.
+ *
+ * @param {Object} rt
+ * @param {Object} node
+ * @param {Function} [onBoot]
+ * @returns {boolean} true when the frame was navigated synchronously
+ */
+function weLayerBootFrame(rt, node, onBoot) {
+  const media = node && node.media
+  if (!media || !node.hostUrl) {
+    return false
+  }
+  const boot = function boot(why) {
+    const box = weLayerFrameBox(media)
+    node.bootBox = box.w + 'x' + box.h
+    weLayerNote(rt, 'frame-boot:' + node.id + ':' + node.bootBox + (why ? ':' + why : ''))
+    try {
+      media.setAttribute('src', node.hostUrl)
+    } catch (error) {
+      weLayerNote(rt, 'frame-src-failed:' + (error && error.message ? error.message : String(error)))
+    }
+    if (typeof onBoot === 'function') {
+      onBoot()
+    }
+  }
+  const view = weLayerViewportBox()
+  if (view.w > 0 && view.h > 0) {
+    boot('now')
+    return true
+  }
+  const started = Date.now()
+  const tick = function waitForViewport() {
+    if (rt.disposed || rt.nodes.indexOf(node) === -1) {
+      return
+    }
+    const next = weLayerViewportBox()
+    if (next.w > 0 && next.h > 0) {
+      boot('waited')
+      return
+    }
+    if (Date.now() - started >= WE_LAYER_FRAME_BOX_WAIT_MS) {
+      weLayerNote(rt, 'frame-box-timeout:' + node.id)
+      boot('timeout')
+      return
+    }
+    weLayerSetTimeout(rt, tick, WE_LAYER_FRAME_BOX_POLL_MS)
+  }
+  weLayerNote(rt, 'frame-wait:' + node.id + ':' + view.w + 'x' + view.h)
+  weLayerSetTimeout(rt, tick, WE_LAYER_FRAME_BOX_POLL_MS)
+  return false
 }
 
 /**
@@ -977,6 +1097,28 @@ function weLayerAttachMediaListeners(rt, node) {
     return
   }
   const onReady = function onLayerContentReady() {
+    // A scene/web frame that booted with no box froze a 1x1 canvas (the
+    // renderer measured once, see weLayerViewportBox). If the box has appeared
+    // by the time the document loads, re-navigate ONCE so it measures the real
+    // size; the reload's own `load` event activates the layer.
+    if (
+      (node.kind === 'scene' || node.kind === 'web') &&
+      node.bootBox === '0x0' &&
+      !node.frameRebooted
+    ) {
+      const box = weLayerFrameBox(media)
+      if (box.w > 0 && box.h > 0) {
+        node.frameRebooted = true
+        node.bootBox = box.w + 'x' + box.h
+        weLayerNote(rt, 'frame-reboot:' + node.id + ':' + node.bootBox)
+        try {
+          media.setAttribute('src', node.hostUrl)
+          return
+        } catch (error) {
+          node.frameRebooted = false
+        }
+      }
+    }
     weLayerContentReady(rt, node)
   }
   const onError = function onLayerContentError() {
@@ -1465,6 +1607,7 @@ function weLayerStop(rt, nextLayer, keepId) {
   if (!keepId) {
     rt.currentId = null
     rt.skippedId = null
+    rt.originUsed = ''
   }
   rt.mode = 'idle'
   rt.paused = false
@@ -1532,6 +1675,10 @@ function weLayerSetCurrent(ctx, item) {
   }
 
   rt.skippedId = null
+  // Remember which media-server origin this mount's URLs come from; a cold
+  // start hydrates a stale one and `weLayerSync` re-mounts when the live one
+  // arrives (see weLayerRuntime.originUsed).
+  rt.originUsed = weMediaOrigin(state)
 
   const url = weLayerPlayUrl(state, item)
   if (!url) {
@@ -1630,7 +1777,16 @@ function weLayerSetCurrent(ctx, item) {
   // a node that is already wired.
   weLayerAttachMediaListeners(rt, node)
   rt.root.appendChild(node.el)
-  weLayerArmReveal(rt, node)
+  if ((node.kind === 'scene' || node.kind === 'web') && node.hostUrl) {
+    // The content gate starts when the frame is actually navigated: on a cold
+    // start the frame may wait for the window to get a viewport, and that wait
+    // must not eat the scene's 15s budget.
+    weLayerBootFrame(rt, node, function armOnFrameBoot() {
+      weLayerArmReveal(rt, node)
+    })
+  } else {
+    weLayerArmReveal(rt, node)
+  }
   try {
     // A scene/web src is the render-page URL built in weLayerCreateNode; the
     // play URL (`/s/<token>/<entry>`) is NOT a document the iframe can load —
@@ -1686,6 +1842,20 @@ function weLayerSync(ctx) {
   }
 
   if (item.id !== rt.currentId) {
+    weLayerSetCurrent(ctx, item)
+    return
+  }
+
+  // Cold start: the first mount came from the localStorage snapshot and was
+  // built against the PREVIOUS backend process's media-server origin (an
+  // ephemeral port that is now dead). That frame loads a chrome-error page —
+  // `load` fires anyway, so the layer claimed `active` with nothing on screen,
+  // and the same-id guard above kept it there forever. The bootstrap response
+  // carries the live origin; rebuild the layer once when it differs.
+  const origin = weMediaOrigin(state)
+  if (origin && rt.originUsed !== origin) {
+    weLayerNote(rt, 'origin-changed:' + rt.originUsed + '->' + origin)
+    rt.currentId = null
     weLayerSetCurrent(ctx, item)
     return
   }

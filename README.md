@@ -69,7 +69,7 @@ cd <HERMES_HOME>/plugins/wallpaper-engine
 python desktop/build.py
 ```
 
-- 期望输出：`built: ... from 6 file(s), 305182 bytes` + `sha256: e0eec48b…`。
+- 期望输出：`built: ... from 6 file(s), 312232 bytes` + `sha256: 6a4711c8…`。
 - 若你改过 `desktop/src/*.js`，这一步必跑；产物变了就说明源码真的生效了。
 - `build.py` 只用标准库，任何 Python 3 都能跑（本机用 3.12.10 实测；更早版本未实测）。
 
@@ -320,8 +320,8 @@ python desktop/build.py --src desktop/src --out desktop/plugin.js
 当前产物（本机实测）：
 
 ```text
-built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 305182 bytes
-sha256: e0eec48b975fd1714741193b6f34f3f94ed76a74a05553d48373f089327c74b7
+built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 312232 bytes
+sha256: 6a4711c859bb6bb30d25c5167c77c3595f93628c87bfeccbadbc695f541b9ad4
 ```
 
 同一份源码连跑两次，sha256 完全一致（已实测 3 次：产物落盘 + 两次写 scratch）。树里的 `desktop/plugin.js` 与重新构建的字节完全相同，说明它是当前源码的产物，不是中间态残留。
@@ -334,7 +334,7 @@ sha256: e0eec48b975fd1714741193b6f34f3f94ed76a74a05553d48373f089327c74b7
 
 | 锚点 | 怎么验 | 预期看到什么 | 可验方式 |
 |---|---|---|---|
-| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `e0eec48b…` | 命令行 ✅ |
+| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `6a4711c8…` | 命令行 ✅ |
 | 产物语法（T12） | `node --check desktop/plugin.js` | 无输出、exit 0 | 命令行 ✅ |
 | `/status` 200 + 7 键 | `PYTHONDONTWRITEBYTECODE=1 <venv>/python -m pytest tests/test_plugin_api.py -p no:cacheprovider -k status` | 通过；键集恰为 `ok version engineFound installDir libraryDirs mediaOrigin mediaError` | 命令行 ✅（TestClient，不经真网关） |
 | `/library` 返回条目 | `... -k library` | 通过；伪造 Steam 树下返回条目，`kind/path/preview` 正确 | 命令行 ✅（用 `tests/fixtures/fake-steam*`）；真实库需真机 |
@@ -445,7 +445,7 @@ node --test tests/frontend/00-core.test.mjs \
            tests/frontend/99-register.test.mjs
 ```
 
-本机实测：`tests 198 / pass 198 / fail 0`（各套件 30 + 56 + 35 + 28 + 31 + 18）。`10-layer` 从 32 涨到 38：6 条钉住背景行为——**图层挂载期必须把四层都置 transparent，teardown 逐字还原**：`<html>`（宿主 boot 脚本钉实色）、`<body>`（`var(--ui-chat-surface-background)`）、`#root` 第一个子 div（`bg-background` + `h-screen`）、`[data-contrib-shell]` div（`bg-(--ui-bg-chrome)` + `h-screen w-screen`）。宿主自己的注释就写明后两者是 app shell 的两个 full-window opaque painters，它靠 `[data-hermes-glass]` 规则清掉，而我们的玻璃只写 token 值、不走那条路，所以两层都得自己清。任何一层漏掉，壁纸都被盖住而 video 自身完全正常（readyState 4、有尺寸、无 error）——2026-10-21 逐个排查出来的。2026-10-22 再涨到 44：6 条钉住**外观链**（filter/不透明度落在 media、scrim 膜层挂在 root 下且 z-index 1、滑杆拖动走 `weLayerSync` 热更新、CSS 兜底规则必须带 `:not([data-we-glass])`）；`30-glass` 从 33 涨到 35，2 条钉住 `<html>` 的 `data-we-glass` 归属标记（start 置位 / stop 清除 / 敌意文档不抛）。2026-10-24 涨到 56：4 条钉住**冷启动恢复**——场景/网页的 content gate 放宽到 15s（2s 会把还在 boot 的渲染页判死，降级后又是粘性的，观感就是「重开桌面端壁纸被放大」）、降级后 5s 自动重试且只重试两次、重试耗尽停在预览图、预览图改 `contain`（1:1 preview 按 cover 会被放大约 2.5 倍并裁掉上下 22%）。
+本机实测：`tests 201 / pass 201 / fail 0`（各套件 30 + 59 + 35 + 28 + 31 + 18）。`10-layer` 从 32 涨到 38：6 条钉住背景行为——**图层挂载期必须把四层都置 transparent，teardown 逐字还原**：`<html>`（宿主 boot 脚本钉实色）、`<body>`（`var(--ui-chat-surface-background)`）、`#root` 第一个子 div（`bg-background` + `h-screen`）、`[data-contrib-shell]` div（`bg-(--ui-bg-chrome)` + `h-screen w-screen`）。宿主自己的注释就写明后两者是 app shell 的两个 full-window opaque painters，它靠 `[data-hermes-glass]` 规则清掉，而我们的玻璃只写 token 值、不走那条路，所以两层都得自己清。任何一层漏掉，壁纸都被盖住而 video 自身完全正常（readyState 4、有尺寸、无 error）——2026-10-21 逐个排查出来的。2026-10-22 再涨到 44：6 条钉住**外观链**（filter/不透明度落在 media、scrim 膜层挂在 root 下且 z-index 1、滑杆拖动走 `weLayerSync` 热更新、CSS 兜底规则必须带 `:not([data-we-glass])`）；`30-glass` 从 33 涨到 35，2 条钉住 `<html>` 的 `data-we-glass` 归属标记（start 置位 / stop 清除 / 敌意文档不抛）。2026-10-24 涨到 56：4 条钉住**冷启动恢复**——场景/网页的 content gate 放宽到 15s（2s 会把还在 boot 的渲染页判死，降级后又是粘性的，观感就是「重开桌面端壁纸被放大」）、降级后 5s 自动重试且只重试两次、重试耗尽停在预览图、预览图改 `contain`（1:1 preview 按 cover 会被放大约 2.5 倍并裁掉上下 22%）。2026-10-26 涨到 59：3 条钉住**冷启动首帧**——(a) 快照里的 media origin 属于上一个后端进程（媒体服务每次启动都换随机端口），iframe 因此加载成 chrome-error 页，`load` 仍会触发，图层报 `active`、画面空白，而同 id 守卫不许重建（实测 frame 指 `:29203`、实际媒体服务 `:22884`）；现在 store 的 origin 一落到新值就重挂一次。(b) 场景渲染页只按启动那一刻的视口量一次 canvas，且没有 resize 通道，0×0 起跑就永久 1×1（实测 `fit cover: view 2160x2160 scene 3840x2160 canvas 1x1`）；现在等窗口真有视口才导航，content gate 从导航起算，万一还是 0×0 就等 `load` 后盒子出现再导航一次（只一次）。
 
 - **必须逐个传 `.mjs` 文件，不能传目录**。`node --test tests/frontend` 会把这个目录当文件，实测直接失败：`test at tests\frontend:1:1 ✖ tests\frontend — 'test failed'`。
 - dev-only 依赖：`react` / `react-dom` 19.2.7、`jsdom` 29.1.1，从 Hermes 桌面树（默认 `<HERMES_HOME>/hermes-agent`）解析；可用 `WE_NODE_MODULES=<dir>` 覆盖。插件运行时**不**依赖它们。
@@ -465,9 +465,9 @@ node --test tests/frontend/00-core.test.mjs \
 
 ```bash
 cd <HERMES_HOME>/plugins/wallpaper-engine
-python desktop/build.py                     # 期望 sha256: e0eec48b…（改过源码则会变）
+python desktop/build.py                     # 期望 sha256: 6a4711c8…（改过源码则会变）
 node --check desktop/plugin.js               # 无输出
-node --test tests/frontend/*.test.mjs        # 198/198（shell 展开成具体文件，仍不是目录）
+node --test tests/frontend/*.test.mjs        # 201/201（shell 展开成具体文件，仍不是目录）
 find . -name '__pycache__' -o -name '.pytest_cache' -o -name '*.pyc' -o -name '*.tmp'   # 必须为空
 ```
 

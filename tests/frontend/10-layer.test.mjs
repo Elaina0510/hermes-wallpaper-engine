@@ -326,6 +326,12 @@ function setup(options = {}) {
   }
   globalThis.document = dom.window.document
   globalThis.window = dom.window
+  if (options.viewport) {
+    // jsdom has no layout engine: pin the window viewport so the cold-start
+    // "no box yet" path is reachable in tests.
+    Object.defineProperty(dom.window, 'innerWidth', { configurable: true, value: options.viewport[0] })
+    Object.defineProperty(dom.window, 'innerHeight', { configurable: true, value: options.viewport[1] })
+  }
   const ctx = makeCtx()
   const items = options.items || [makeItem()]
   core.weApplyLibrary({
@@ -1334,4 +1340,88 @@ test('scene: a null play url degrades straight to the preview', () => {
   })
   assert.equal(env.storeLayer(), 'fallback')
   assert.ok(env.layers().some((layer) => layer.classList.contains('we-layer--fallback')))
+})
+
+// A cold start mounts the shell while the host window is still hidden, so the
+// window viewport is 0x0. The vendor render page measures its canvas ONCE from
+// that viewport (clamped to 1), and a scene has no resize path — booting there
+// froze a 1x1 canvas for the whole session (2026-10-26 21:42:
+// `fit cover: view 2160x2160 scene 3840x2160 canvas 1x1`). The frame therefore
+// waits for a real viewport, and the content gate starts with the navigation.
+test('scene: a zero-viewport window defers the frame until the host has a box', () => {
+  const env = setup({
+    items: [sceneItem()],
+    config: makeConfig({ currentId: 'id-scene' }),
+    viewport: [0, 0],
+  })
+  const frame = env.layers()[0].querySelector('iframe')
+  assert.equal(frame.getAttribute('src'), null, 'no navigation while the window has no viewport')
+  assert.ok(
+    env.state().notes.some((note) => note.indexOf('frame-wait:id-scene') === 0),
+    `expected a frame-wait note, got ${JSON.stringify(env.state().notes)}`,
+  )
+  assert.equal(liveTimers(env.ctx, 15000).length, 0, 'the scene gate has not started yet')
+  assert.equal(env.storeLayer(), 'loading')
+
+  // The window is shown / laid out: the next poll sees a viewport and boots.
+  Object.defineProperty(env.dom.window, 'innerWidth', { configurable: true, value: 1280 })
+  Object.defineProperty(env.dom.window, 'innerHeight', { configurable: true, value: 800 })
+  const poll = liveTimers(env.ctx, 100)[0]
+  assert.ok(poll, 'a viewport poll must be armed')
+  fireTimer(poll)
+
+  const src = frame.getAttribute('src')
+  assert.ok(src && src.startsWith(`${ORIGIN}/gl/host.html?`), src)
+  assert.equal(liveTimers(env.ctx, 15000).length, 1, 'the 15s gate starts at the navigation, not before')
+})
+
+test('scene: a frame that booted at 0x0 is navigated once more when the box appears', () => {
+  const env = setup({ items: [sceneItem()], config: makeConfig({ currentId: 'id-scene' }) })
+  const frame = env.layers()[0].querySelector('iframe')
+  // jsdom reports no layout: the boot box is 0x0, i.e. exactly what a hidden
+  // window produced. The box appears later (the window was shown/laid out).
+  assert.ok(env.state().notes.some((note) => note.indexOf('frame-boot:id-scene:0x0') === 0))
+  Object.defineProperty(frame, 'clientWidth', { configurable: true, value: 1280 })
+  Object.defineProperty(frame, 'clientHeight', { configurable: true, value: 800 })
+  fire(env.dom, frame, 'load')
+
+  assert.equal(env.storeLayer(), 'loading', 'the first load must not activate a blind render')
+  assert.ok(
+    env.state().notes.some((note) => note.indexOf('frame-reboot:id-scene:1280x800') === 0),
+    `expected a frame-reboot note, got ${JSON.stringify(env.state().notes)}`,
+  )
+
+  fire(env.dom, frame, 'load')
+  assert.equal(env.storeLayer(), 'active', 'the second load activates')
+})
+
+// Cold start mounts from the localStorage snapshot, which carries the PREVIOUS
+// backend process's media-server origin. The media server binds an ephemeral
+// port, so that origin is a dead port: the frame loads a chrome-error page, its
+// `load` event still fires, and the layer sits at `active` over nothing while
+// the same-id guard refuses to rebuild. Observed 2026-10-26: the mounted frame
+// pointed at :29203 while the live media server was :22884.
+test('a stale cached media origin is rebuilt once the live origin arrives', () => {
+  const stale = 'http://127.0.0.1:7001'
+  const live = 'http://127.0.0.1:7002'
+  const env = setup({
+    items: [sceneItem()],
+    config: makeConfig({ currentId: 'id-scene' }),
+    mediaOrigin: stale,
+  })
+  assert.ok(env.layers()[0].querySelector('iframe').getAttribute('src').startsWith(`${stale}/gl/host.html?`))
+
+  // The bootstrap response: same selection, same library, new media origin.
+  env.core.weApplyLibrary({ engineFound: true, mediaOrigin: live, errors: [], items: [sceneItem()] })
+
+  const loading = env.layers().filter((layer) => layer.getAttribute('data-we-state') === 'loading')
+  assert.equal(loading.length, 1, 'the stale layer is replaced by one fresh node')
+  assert.ok(
+    loading[0].querySelector('iframe').getAttribute('src').startsWith(`${live}/gl/host.html?`),
+    'the fresh node is built against the live origin',
+  )
+  assert.ok(
+    env.state().notes.some((note) => note.indexOf(`origin-changed:${stale}->${live}`) === 0),
+    `expected an origin-changed note, got ${JSON.stringify(env.state().notes)}`,
+  )
 })
