@@ -333,6 +333,9 @@ function setup(options = {}) {
     Object.defineProperty(dom.window, 'innerHeight', { configurable: true, value: options.viewport[1] })
   }
   const ctx = makeCtx()
+  if (options.storage) {
+    ctx.storage = options.storage
+  }
   const items = options.items || [makeItem()]
   core.weApplyLibrary({
     engineFound: true,
@@ -1226,6 +1229,93 @@ test('a themed floor sits under the wallpaper so the window never flashes white'
   env.core.weLayerDispose()
 
   assert.equal(env.doc.querySelector('.we-layer__backdrop'), null, 'teardown removes the floor')
+})
+
+// Launch gap, second half: the themed floor removes the white flash but the
+// screenshot still has no wallpaper for ~0.5s after the mask lifts. The still
+// cached from the last session covers that gap; the live node paints over it.
+function makeStorage(seed = {}) {
+  const map = new Map(Object.entries(seed))
+  return {
+    get(key, fallback) {
+      return map.has(key) ? map.get(key) : fallback
+    },
+    set(key, value) {
+      map.set(key, value)
+      return true
+    },
+    dump() {
+      return Object.fromEntries(map)
+    },
+  }
+}
+
+const POSTER_A = 'data:image/jpeg;base64,AAAA'
+const POSTER_B = 'data:image/jpeg;base64,BBBB'
+
+test('a cached still is painted under the live layer at mount', () => {
+  const env = setup({
+    items: [makeItem({ id: 'id-a' })],
+    config: makeConfig({ currentId: 'id-a' }),
+    storage: makeStorage({ 'we.poster.v1.id-a': POSTER_A }),
+  })
+
+  const poster = env.doc.querySelector('.we-layer__poster')
+  assert.ok(poster, 'the cached still must be on screen')
+  assert.equal(poster.getAttribute('src'), POSTER_A)
+  assert.equal(poster.getAttribute('data-we-poster'), 'id-a')
+  assert.equal(poster.style.objectFit, 'cover', 'the still follows objectFit')
+  assert.equal(poster.style.zIndex, '2', 'above the live node: a scene iframe paints opaque at once')
+  assert.equal(poster.parentNode, env.root(), 'it lives inside the layer root')
+  assert.equal(env.layers().length, 1, 'the live node is still mounted above it')
+})
+
+test('the still never outlives its own selection', () => {
+  const env = setup({
+    items: [makeItem({ id: 'id-a' }), makeItem({ id: 'id-b' })],
+    config: makeConfig({ currentId: 'id-a' }),
+    storage: makeStorage({ 'we.poster.v1.id-a': POSTER_A, 'we.poster.v1.id-b': POSTER_B }),
+  })
+  assert.equal(env.doc.querySelector('.we-layer__poster').getAttribute('src'), POSTER_A)
+
+  env.core.weApplyConfig(makeConfig({ currentId: 'id-b' }))
+
+  const posters = env.doc.querySelectorAll('.we-layer__poster')
+  assert.equal(posters.length, 1, 'exactly one still, never a stack')
+  assert.equal(posters[0].getAttribute('data-we-poster'), 'id-b')
+  assert.equal(posters[0].getAttribute('src'), POSTER_B)
+
+  env.core.weLayerDispose()
+  assert.equal(env.doc.querySelector('.we-layer__poster'), null, 'teardown takes it with the layer')
+})
+
+test('no cached still means no poster (first run)', () => {
+  const env = setup({ items: [makeItem({ id: 'id-a' })], config: makeConfig({ currentId: 'id-a' }) })
+  assert.equal(env.doc.querySelector('.we-layer__poster'), null)
+})
+
+test('the still retires shortly after the live layer reports active', () => {
+  const env = setup({
+    items: [makeItem({ id: 'id-a' })],
+    config: makeConfig({ currentId: 'id-a' }),
+    storage: makeStorage({ 'we.poster.v1.id-a': POSTER_A }),
+  })
+  const poster = env.doc.querySelector('.we-layer__poster')
+  env.core.weSet({ boot: 'ready' })
+  const video = videoOf('id-a')
+  video.__readyState = 4
+  fire(env.dom, video, 'loadeddata')
+
+  assert.ok(poster.parentNode, 'the still stays up during the hold')
+  const fade = liveTimers(env.ctx, 450)[0]
+  assert.ok(fade, 'a hold timer must be armed on activate')
+  fireTimer(fade)
+  assert.equal(poster.style.opacity, '0', 'the still fades out over the live frame')
+
+  const drop = liveTimers(env.ctx, 360)[0]
+  assert.ok(drop, 'the drop timer follows the fade')
+  fireTimer(drop)
+  assert.equal(env.doc.querySelector('.we-layer__poster'), null)
 })
 
 test('the chat-only card is scoped to the wallpaper and never touches the sidebars', () => {

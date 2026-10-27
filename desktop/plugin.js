@@ -1274,6 +1274,8 @@ const weLayerRuntime = {
   root: null,
   /** Theme floor under the layer; see weLayerEnsureBackdrop. */
   backdrop: null,
+  /** Cached still painted before the live node has a frame (see the poster block). */
+  poster: null,
   styleEl: null,
   /** The `scrim` dark-film element under the root (one per layer stack). */
   scrim: null,
@@ -1785,9 +1787,230 @@ function weLayerEnsureBackdrop(doc, host) {
 }
 
 // --------------------------------------------------------------------------- //
-// layer nodes
+// cached poster
+//
+// The launch gap: the CONNECTING mask lifts at ~6.9s on this machine and the
+// live layer's first frame lands ~0.5s later (measured 2026-10-27). A themed
+// floor stops that gap from being white, but it is still a gap. So each
+// wallpaper's preview is cached (small JPEG data URL, LRU) the first time it is
+// on screen, and the next launch paints that still immediately — the poster is
+// below the live node, which replaces it the moment the real frame arrives.
 // --------------------------------------------------------------------------- //
 
+/** Per-wallpaper poster; the index key holds the LRU order (oldest first). */
+const WE_LAYER_POSTER_KEY = 'we.poster.v1.'
+const WE_LAYER_POSTER_INDEX_KEY = 'we.poster.index.v1'
+/** Keep the cache small: storage is localStorage-class (~5MB) and one poster is
+ *  ~40–60KB at this size, so 8 of them is a few hundred KB. */
+const WE_LAYER_POSTER_MAX = 8
+const WE_LAYER_POSTER_WIDTH = 480
+const WE_LAYER_POSTER_QUALITY = 0.62
+/** The still sits ABOVE the live node on purpose: a scene iframe is opaque from
+ *  its first paint (host.html paints a background), so a still underneath it is
+ *  invisible until the scene draws — exactly the gap it exists to cover. It is
+ *  retired shortly after the layer reports active, which is also when a scene's
+ *  first frame has landed (measured ~0.4s after `renderer started`). */
+const WE_LAYER_POSTER_HOLD_MS = 450
+const WE_LAYER_POSTER_FADE_MS = 320
+
+/** @param {*} ctx @returns {string[]} */
+function weLayerPosterIndex(ctx) {
+  const raw = weStorageGet(ctx, WE_LAYER_POSTER_INDEX_KEY, [])
+  return Array.isArray(raw) ? raw.filter(function isId(value) { return typeof value === 'string' && value }) : []
+}
+
+/**
+ * @param {*} ctx
+ * @param {string} id
+ * @returns {string} data URL, or '' when nothing usable is cached
+ */
+function weLayerPosterRead(ctx, id) {
+  if (!ctx || !id) {
+    return ''
+  }
+  const value = weStorageGet(ctx, WE_LAYER_POSTER_KEY + id, '')
+  return typeof value === 'string' && value.indexOf('data:image/') === 0 ? value : ''
+}
+
+/**
+ * Cache one poster and evict the oldest beyond the cap. A quota failure is
+ * silent: the poster is an optimisation, never a dependency.
+ *
+ * @param {*} ctx
+ * @param {string} id
+ * @param {string} dataUrl
+ * @returns {boolean}
+ */
+function weLayerPosterWrite(ctx, id, dataUrl) {
+  if (!ctx || !id || !dataUrl) {
+    return false
+  }
+  const index = weLayerPosterIndex(ctx).filter(function notSame(value) { return value !== id })
+  index.push(id)
+  while (index.length > WE_LAYER_POSTER_MAX) {
+    const drop = index.shift()
+    weStorageSet(ctx, WE_LAYER_POSTER_KEY + drop, '')
+  }
+  if (!weStorageSet(ctx, WE_LAYER_POSTER_KEY + id, dataUrl)) {
+    return false
+  }
+  weStorageSet(ctx, WE_LAYER_POSTER_INDEX_KEY, index)
+  return true
+}
+
+/** Drop the poster node (real frame arrived, fallback took over, or teardown). */
+function weLayerPosterClear(rt) {
+  if (!rt.poster) {
+    return
+  }
+  if (rt.poster.parentNode) {
+    rt.poster.parentNode.removeChild(rt.poster)
+  }
+  rt.poster = null
+}
+
+/**
+ * Retire the still once the live layer is really up.
+ *
+ * The hold exists because `activate` for a scene means "the render page's
+ * document loaded", which lands ~0.4s before the first drawn frame. It only
+ * runs when the bootstrap has settled: on a cold start the first mount is built
+ * against the previous process's dead media port, `load` fires anyway, and
+ * retiring there would remove the still seconds before the real one arrives.
+ *
+ * @param {Object} rt
+ */
+function weLayerPosterRetire(rt) {
+  const poster = rt.poster
+  if (!poster) {
+    return
+  }
+  weLayerSetTimeout(rt, function fadePoster() {
+    if (rt.poster !== poster) {
+      return
+    }
+    poster.style.transition = 'opacity ' + WE_LAYER_POSTER_FADE_MS + 'ms ease'
+    poster.style.opacity = '0'
+    weLayerSetTimeout(rt, function dropPoster() {
+      if (rt.poster === poster) {
+        weLayerPosterClear(rt)
+      }
+    }, WE_LAYER_POSTER_FADE_MS + 40)
+  }, WE_LAYER_POSTER_HOLD_MS)
+}
+
+/**
+ * Paint the cached still for `item`, under every live node. Returns null when
+ * nothing is cached (first run, or a wallpaper never seen on screen).
+ *
+ * @param {Object} rt
+ * @param {*} item
+ * @returns {Element|null}
+ */
+function weLayerPosterShow(rt, item) {
+  const doc = weLayerDocument()
+  if (!doc || !rt.root || !item || !item.id) {
+    return null
+  }
+  if (rt.poster) {
+    if (rt.poster.getAttribute('data-we-poster') === item.id) {
+      return rt.poster
+    }
+    // A different wallpaper: the still must not outlive its own selection.
+    weLayerPosterClear(rt)
+  }
+  const dataUrl = weLayerPosterRead(rt.ctx, item.id)
+  if (!dataUrl) {
+    return null
+  }
+  const img = doc.createElement('img')
+  img.className = 'we-layer__poster'
+  img.setAttribute('aria-hidden', 'true')
+  img.setAttribute('alt', '')
+  img.setAttribute('data-we-poster', item.id)
+  img.src = dataUrl
+  img.style.position = 'absolute'
+  img.style.top = '0'
+  img.style.right = '0'
+  img.style.bottom = '0'
+  img.style.left = '0'
+  img.style.width = '100%'
+  img.style.height = '100%'
+  img.style.objectFit = weLayerSettings(weGetState()).objectFit
+  img.style.objectPosition = 'center'
+  img.style.pointerEvents = 'none'
+  img.style.background = 'transparent'
+  // Above the live node (a scene iframe paints opaque immediately); retired on
+  // activate, see weLayerPosterRetire.
+  img.style.zIndex = '2'
+  // Appended last = top of the stack inside the root.
+  rt.root.appendChild(img)
+  rt.poster = img
+  weLayerNote(rt, 'poster:' + item.id)
+  return img
+}
+
+/**
+ * Fetch + downscale the preview into storage. Runs off the critical path, never
+ * throws, and skips when this wallpaper already has a poster or when the
+ * environment cannot decode (tests, no fetch).
+ *
+ * @param {*} ctx
+ * @param {*} item
+ * @param {string} url  preview URL on the LIVE media origin
+ */
+function weLayerPosterCapture(ctx, item, url) {
+  if (!ctx || !item || !item.id || !url) {
+    return
+  }
+  if (weLayerPosterRead(ctx, item.id)) {
+    return
+  }
+  if (typeof fetch !== 'function' || typeof createImageBitmap !== 'function') {
+    return
+  }
+  const doc = weLayerDocument()
+  if (!doc || typeof doc.createElement !== 'function') {
+    return
+  }
+  fetch(url, { mode: 'cors', credentials: 'omit' })
+    .then(function toBlob(response) {
+      return response && response.ok ? response.blob() : null
+    })
+    .then(function toBitmap(blob) {
+      return blob ? createImageBitmap(blob) : null
+    })
+    .then(function shrink(bitmap) {
+      if (!bitmap || !bitmap.width) {
+        return
+      }
+      const width = WE_LAYER_POSTER_WIDTH
+      const height = Math.max(1, Math.round((bitmap.height * width) / bitmap.width))
+      const canvas = doc.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const cx = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null
+      if (!cx) {
+        return
+      }
+      cx.drawImage(bitmap, 0, 0, width, height)
+      if (typeof bitmap.close === 'function') {
+        bitmap.close()
+      }
+      const dataUrl = canvas.toDataURL('image/jpeg', WE_LAYER_POSTER_QUALITY)
+      if (typeof dataUrl === 'string' && dataUrl.indexOf('data:image/jpeg') === 0) {
+        weLayerPosterWrite(ctx, item.id, dataUrl)
+      }
+    })
+    .catch(function ignored() {
+      // Offline / dead port / decode failure: the next launch simply has no
+      // poster for this wallpaper, which is the pre-existing behaviour.
+    })
+}
+
+// --------------------------------------------------------------------------- //
+// layer nodes
+// --------------------------------------------------------------------------- //
 /**
  * Build one layer element plus its media child. Nothing is attached to the
  * document here — the caller appends it once the previous layer's fate is
@@ -2568,6 +2791,12 @@ function weLayerActivate(rt, node) {
   }
   weLayerPlay(rt, node)
   weLayerNote(rt, 'active:' + node.id)
+  // Only once the store carries the live backend's answer: before that, a
+  // "load" can be the dead snapshot port's chrome-error page (see the poster
+  // block) and the still must stay.
+  if (weGetState().boot === WE_BOOT.READY) {
+    weLayerPosterRetire(rt)
+  }
 }
 
 /**
@@ -2594,6 +2823,9 @@ function weLayerActivateStatic(rt, node) {
     weSet({ layer: WE_LAYER.FALLBACK })
   }
   weLayerNote(rt, 'static-active:' + node.id)
+  if (weGetState().boot === WE_BOOT.READY) {
+    weLayerPosterRetire(rt)
+  }
 }
 
 /**
@@ -2638,6 +2870,9 @@ function weLayerContentFailed(rt, node, reason) {
  * @param {string} reason
  */
 function weLayerFallback(rt, item, reason) {
+  // The fallback node IS the preview; drop the cached still so the two do not
+  // stack (and so a stale poster never outlives the wallpaper it belonged to).
+  weLayerPosterClear(rt)
   const state = weGetState()
   const url = weLayerPreviewUrl(state, item)
   if (!url) {
@@ -2689,6 +2924,7 @@ function weLayerFallback(rt, item, reason) {
 function weLayerStop(rt, nextLayer, keepId) {
   rt.generation += 1
   weLayerClearGate(rt)
+  weLayerPosterClear(rt)
   rt.pending = null
   for (const node of rt.nodes.slice()) {
     weLayerDestroyNode(rt, node, 'stop')
@@ -2770,6 +3006,10 @@ function weLayerSetCurrent(ctx, item) {
   // arrives (see weLayerRuntime.originUsed).
   rt.originUsed = weMediaOrigin(state)
 
+  // Refresh the launch poster for the next start (cheap, off the critical path;
+  // silently skipped when the origin is still the dead snapshot port).
+  weLayerPosterCapture(rt.ctx || ctx, item, weLayerPreviewUrl(state, item))
+
   const url = weLayerPlayUrl(state, item)
   if (!url) {
     // No media origin (server down) or no play URL: degrade exactly like a load
@@ -2793,6 +3033,10 @@ function weLayerSetCurrent(ctx, item) {
     weLayerNote(rt, 'no-root:set-current')
     return
   }
+
+  // Under the live node: last session's still, so the screen is never empty
+  // while this mount is still fetching/decoding.
+  weLayerPosterShow(rt, item)
 
   const transition = settings.switchTransition
   // Cold start: nothing of ours is on screen yet (first mount of this session,
@@ -3151,6 +3395,7 @@ function weLayerDispose() {
     rt.backdrop.parentNode.removeChild(rt.backdrop)
   }
   rt.backdrop = null
+  rt.poster = null
   rt.scrim = null
   if (rt.styleEl && rt.styleEl.parentNode) {
     rt.styleEl.parentNode.removeChild(rt.styleEl)
