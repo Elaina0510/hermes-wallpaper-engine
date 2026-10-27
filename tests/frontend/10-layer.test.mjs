@@ -1208,6 +1208,26 @@ test('the boot mask is pinned back to the opaque chrome colour while the engine 
   )
 })
 
+// Clearing <html>/<body> for the wallpaper also exposes the window's own white
+// backing whenever no wallpaper pixel exists yet. Measured 2026-10-27: the mask
+// left at t=6.9s, the scene's first frame landed at t=7.5s, and the screen in
+// between was rgb(193,194,194). A themed floor at z-index:-2 fixes the gap
+// without ever covering the wallpaper (which is z-index:-1).
+test('a themed floor sits under the wallpaper so the window never flashes white', () => {
+  const env = setup()
+  const floor = env.doc.querySelector('.we-layer__backdrop')
+
+  assert.ok(floor, 'the floor must exist while the layer is mounted')
+  assert.equal(floor.style.zIndex, '-2', 'below the layer (-1), above the window paint')
+  assert.equal(floor.style.position, 'fixed')
+  assert.equal(floor.style.pointerEvents, 'none')
+  assert.match(floor.style.background, /--ui-bg-chrome/)
+
+  env.core.weLayerDispose()
+
+  assert.equal(env.doc.querySelector('.we-layer__backdrop'), null, 'teardown removes the floor')
+})
+
 test('the chat-only card is scoped to the wallpaper and never touches the sidebars', () => {
   const core = loadBundle()
   const text = String(core.WE_LAYER_CSS)

@@ -69,7 +69,7 @@ cd <HERMES_HOME>/plugins/wallpaper-engine
 python desktop/build.py
 ```
 
-- 期望输出：`built: ... from 6 file(s), 314696 bytes` + `sha256: 6e37f19a…`。
+- 期望输出：`built: ... from 6 file(s), 316966 bytes` + `sha256: 8c45194b…`。
 - 若你改过 `desktop/src/*.js`，这一步必跑；产物变了就说明源码真的生效了。
 - `build.py` 只用标准库，任何 Python 3 都能跑（本机用 3.12.10 实测；更早版本未实测）。
 
@@ -320,8 +320,8 @@ python desktop/build.py --src desktop/src --out desktop/plugin.js
 当前产物（本机实测）：
 
 ```text
-built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 314696 bytes
-sha256: 6e37f19a67e2040073f663946175b3900a6d5778f346188c5dce70999539b650
+built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 316966 bytes
+sha256: 8c45194b2a696932326f32f444f3461bb169baac7938be65a296ac2d9fd1d927
 ```
 
 同一份源码连跑两次，sha256 完全一致（已实测 3 次：产物落盘 + 两次写 scratch）。树里的 `desktop/plugin.js` 与重新构建的字节完全相同，说明它是当前源码的产物，不是中间态残留。
@@ -445,7 +445,9 @@ node --test tests/frontend/00-core.test.mjs \
            tests/frontend/99-register.test.mjs
 ```
 
-本机实测：`tests 204 / pass 204 / fail 0`（各套件 30 + 62 + 35 + 28 + 31 + 18）。`10-layer` 从 32 涨到 38：6 条钉住背景行为——**图层挂载期必须把四层都置 transparent，teardown 逐字还原**：`<html>`（宿主 boot 脚本钉实色）、`<body>`（`var(--ui-chat-surface-background)`）、`#root` 第一个子 div（`bg-background` + `h-screen`）、`[data-contrib-shell]` div（`bg-(--ui-bg-chrome)` + `h-screen w-screen`）。宿主自己的注释就写明后两者是 app shell 的两个 full-window opaque painters，它靠 `[data-hermes-glass]` 规则清掉，而我们的玻璃只写 token 值、不走那条路，所以两层都得自己清。任何一层漏掉，壁纸都被盖住而 video 自身完全正常（readyState 4、有尺寸、无 error）——2026-10-21 逐个排查出来的。2026-10-22 再涨到 44：6 条钉住**外观链**（filter/不透明度落在 media、scrim 膜层挂在 root 下且 z-index 1、滑杆拖动走 `weLayerSync` 热更新、CSS 兜底规则必须带 `:not([data-we-glass])`）；`30-glass` 从 33 涨到 35，2 条钉住 `<html>` 的 `data-we-glass` 归属标记（start 置位 / stop 清除 / 敌意文档不抛）。2026-10-24 涨到 56：4 条钉住**冷启动恢复**——场景/网页的 content gate 放宽到 15s（2s 会把还在 boot 的渲染页判死，降级后又是粘性的，观感就是「重开桌面端壁纸被放大」）、降级后 5s 自动重试且只重试两次、重试耗尽停在预览图、预览图改 `contain`（1:1 preview 按 cover 会被放大约 2.5 倍并裁掉上下 22%）。2026-10-26 涨到 59：3 条钉住**冷启动首帧**——(a) 快照里的 media origin 属于上一个后端进程（媒体服务每次启动都换随机端口），iframe 因此加载成 chrome-error 页，`load` 仍会触发，图层报 `active`、画面空白，而同 id 守卫不许重建（实测 frame 指 `:29203`、实际媒体服务 `:22884`）；现在 store 的 origin 一落到新值就重挂一次。(b) 场景渲染页只按启动那一刻的视口量一次 canvas，且没有 resize 通道，0×0 起跑就永久 1×1（实测 `fit cover: view 2160x2160 scene 3840x2160 canvas 1x1`）；现在等窗口真有视口才导航，content gate 从导航起算，万一还是 0×0 就等 `load` 后盒子出现再导航一次（只一次）。2026-10-27 涨到 61：2 条钉住**冷启动淡入**——开桌面端时屏幕本来是空的，1800ms 的切换淡入只是把「壁纸出现」又推后 1.8s（实测窗口约 4.4s 出现、实时层约 3s 后就绪）；现在「一个自己的层都没挂」时用 200ms 冷淡入，origin 变更重建前先把死端口节点直接销毁（chrome-error 页没有像素，留着当底图毫无意义），真正切壁纸仍是 1800ms。同一天再涨到 62：1 条钉住**宿主 CONNECTING 遮罩被 token 污染**——那层全屏遮罩就是用 `--ui-chat-surface-background` 铺的，玻璃引擎把这个 token 改写成 `rgba(chrome, cardBase%)`，于是插件一挂载遮罩就掉到 15%（实测 `rgba(24,26,30,0.15)`，而挂载前它是实色 `rgb(13,16,21)`），浅色主题下窗口底色透上来就是一片白；现在 `:root[data-we-glass] [data-glass-opaque]` 钉回实色 chrome，跟宿主自己玻璃模式的解法同一条规则。
+本机实测：`tests 205 / pass 205 / fail 0`（各套件 30 + 63 + 35 + 28 + 31 + 18）。`10-layer` 从 32 涨到 38：6 条钉住背景行为——**图层挂载期必须把四层都置 transparent，teardown 逐字还原**：`<html>`（宿主 boot 脚本钉实色）、`<body>`（`var(--ui-chat-surface-background)`）、`#root` 第一个子 div（`bg-background` + `h-screen`）、`[data-contrib-shell]` div（`bg-(--ui-bg-chrome)` + `h-screen w-screen`）。宿主自己的注释就写明后两者是 app shell 的两个 full-window opaque painters，它靠 `[data-hermes-glass]` 规则清掉，而我们的玻璃只写 token 值、不走那条路，所以两层都得自己清。任何一层漏掉，壁纸都被盖住而 video 自身完全正常（readyState 4、有尺寸、无 error）——2026-10-21 逐个排查出来的。2026-10-22 再涨到 44：6 条钉住**外观链**（filter/不透明度落在 media、scrim 膜层挂在 root 下且 z-index 1、滑杆拖动走 `weLayerSync` 热更新、CSS 兜底规则必须带 `:not([data-we-glass])`）；`30-glass` 从 33 涨到 35，2 条钉住 `<html>` 的 `data-we-glass` 归属标记（start 置位 / stop 清除 / 敌意文档不抛）。2026-10-24 涨到 56：4 条钉住**冷启动恢复**——场景/网页的 content gate 放宽到 15s（2s 会把还在 boot 的渲染页判死，降级后又是粘性的，观感就是「重开桌面端壁纸被放大」）、降级后 5s 自动重试且只重试两次、重试耗尽停在预览图、预览图改 `contain`（1:1 preview 按 cover 会被放大约 2.5 倍并裁掉上下 22%）。2026-10-26 涨到 59：3 条钉住**冷启动首帧**——(a) 快照里的 media origin 属于上一个后端进程（媒体服务每次启动都换随机端口），iframe 因此加载成 chrome-error 页，`load` 仍会触发，图层报 `active`、画面空白，而同 id 守卫不许重建（实测 frame 指 `:29203`、实际媒体服务 `:22884`）；现在 store 的 origin 一落到新值就重挂一次。(b) 场景渲染页只按启动那一刻的视口量一次 canvas，且没有 resize 通道，0×0 起跑就永久 1×1（实测 `fit cover: view 2160x2160 scene 3840x2160 canvas 1x1`）；现在等窗口真有视口才导航，content gate 从导航起算，万一还是 0×0 就等 `load` 后盒子出现再导航一次（只一次）。2026-10-27 涨到 61：2 条钉住**冷启动淡入**——开桌面端时屏幕本来是空的，1800ms 的切换淡入只是把「壁纸出现」又推后 1.8s（实测窗口约 4.4s 出现、实时层约 3s 后就绪）；现在「一个自己的层都没挂」时用 200ms 冷淡入，origin 变更重建前先把死端口节点直接销毁（chrome-error 页没有像素，留着当底图毫无意义），真正切壁纸仍是 1800ms。同一天再涨到 62：1 条钉住**宿主 CONNECTING 遮罩被 token 污染**——那层全屏遮罩就是用 `--ui-chat-surface-background` 铺的，玻璃引擎把这个 token 改写成 `rgba(chrome, cardBase%)`，于是插件一挂载遮罩就掉到 15%（实测 `rgba(24,26,30,0.15)`，而挂载前它是实色 `rgb(13,16,21)`），浅色主题下窗口底色透上来就是一片白；现在 `:root[data-we-glass] [data-glass-opaque]` 钉回实色 chrome，跟宿主自己玻璃模式的解法同一条规则。
+
+同日再涨到 63：1 条钉住**遮罩退场后的白闪**——为了露出壁纸，插件把 `<html>/<body>` 和两个 shell painter 都清成透明，于是「遮罩已走、壁纸首帧还没到」的空窗期透出 Electron 窗口自己的白底（实测 t=6.9s 遮罩消失、t=7.5s 场景首帧，中间画面 `rgb(193,194,194)`）。现在壁纸下面垫一层 `z-index:-2` 的主题色地板（`--ui-bg-chrome`），空窗期显示主题底色而不是白屏，且永远盖不住 `-1` 的壁纸层。
 
 - **必须逐个传 `.mjs` 文件，不能传目录**。`node --test tests/frontend` 会把这个目录当文件，实测直接失败：`test at tests\frontend:1:1 ✖ tests\frontend — 'test failed'`。
 - dev-only 依赖：`react` / `react-dom` 19.2.7、`jsdom` 29.1.1，从 Hermes 桌面树（默认 `<HERMES_HOME>/hermes-agent`）解析；可用 `WE_NODE_MODULES=<dir>` 覆盖。插件运行时**不**依赖它们。

@@ -52,6 +52,8 @@ const WE_LAYER_STYLE_ID = 'we-layer-style'
 
 const WE_LAYER_CLASS = 'we-layer'
 const WE_LAYER_MEDIA_CLASS = 'we-layer__media'
+/** Theme-coloured floor painted under the wallpaper (`z-index:-2`). */
+const WE_LAYER_BACKDROP_CLASS = 'we-layer__backdrop'
 /** Dark film over the wallpaper (`scrim` setting), a child of the layer root. */
 const WE_LAYER_SCRIM_CLASS = 'we-layer__scrim'
 const WE_LAYER_VIDEO_CLASS = 'we-layer--video'
@@ -213,6 +215,7 @@ const WE_LAYER_CSS = [
   // the opaque chrome token; mirror that rule while our engine owns the tokens.
   ':root[data-we-glass] [data-glass-opaque]{background-color:var(--ui-bg-chrome) !important}',
   '.we-layer{position:absolute;inset:0;opacity:1;pointer-events:none;background:transparent}',
+  '.we-layer__backdrop{position:fixed;inset:0;z-index:-2;pointer-events:none;background:var(--ui-bg-chrome, #0d1015)}',
   '.we-layer__media{display:block;width:100%;height:100%;object-fit:cover;object-position:center;pointer-events:none;background:transparent}',
   // The scrim film sits ABOVE every layer node (z-index 1 in the root's own
   // stacking context, nodes are z-index auto) and below the app content, which
@@ -256,6 +259,8 @@ const weLayerRuntime = {
   debug: false,
   ctx: null,
   root: null,
+  /** Theme floor under the layer; see weLayerEnsureBackdrop. */
+  backdrop: null,
   styleEl: null,
   /** The `scrim` dark-film element under the root (one per layer stack). */
   scrim: null,
@@ -635,6 +640,7 @@ function weLayerEnsureRoot(doc) {
       host.appendChild(root)
     }
   }
+  weLayerEnsureBackdrop(doc, doc.body || doc.documentElement)
   // `<html>` must be transparent while the layer exists.
   //
   // `z-index: -1` puts this box BEHIND its stacking context's background — and
@@ -714,6 +720,55 @@ function weLayerEnsureRoot(doc) {
   }
   rt.root = root
   return root
+}
+
+/**
+ * Theme-coloured floor under the wallpaper (`z-index:-2`).
+ *
+ * `weLayerEnsureRoot` clears `<html>`, `<body>` and both shell painters so the
+ * `z-index:-1` layer can be seen. That also means that while there is no
+ * wallpaper pixel yet, the Electron window's own backing (white here) shows
+ * across the whole screen. Measured 2026-10-27 on a cold start: the CONNECTING
+ * mask left at t=6.9s, the scene's first frame landed at t=7.5s, and the screen
+ * in between measured `rgb(193,194,194)` — a white flash right after the boot
+ * screen, which reads as "the wallpaper is still loading".
+ *
+ * This div sits below the wallpaper (so it never hides one) and above the window
+ * paint, so the gap shows the theme's chrome colour instead of white. Its
+ * background token is `--ui-bg-chrome` — the one the glass engine reads from and
+ * never rewrites.
+ *
+ * @param {Document} doc
+ * @param {Element|null} host
+ * @returns {Element|null}
+ */
+function weLayerEnsureBackdrop(doc, host) {
+  const rt = weLayerRuntime
+  if (!doc || !host || typeof doc.createElement !== 'function') {
+    return null
+  }
+  let el = rt.backdrop && rt.backdrop.parentNode ? rt.backdrop : null
+  if (!el && typeof doc.querySelector === 'function') {
+    el = doc.querySelector('.' + WE_LAYER_BACKDROP_CLASS)
+  }
+  if (!el) {
+    el = doc.createElement('div')
+    el.className = WE_LAYER_BACKDROP_CLASS
+    el.setAttribute('aria-hidden', 'true')
+  }
+  el.style.position = 'fixed'
+  el.style.top = '0'
+  el.style.right = '0'
+  el.style.bottom = '0'
+  el.style.left = '0'
+  el.style.zIndex = '-2'
+  el.style.pointerEvents = 'none'
+  el.style.background = 'var(--ui-bg-chrome, #0d1015)'
+  if (!el.parentNode) {
+    host.appendChild(el)
+  }
+  rt.backdrop = el
+  return el
 }
 
 // --------------------------------------------------------------------------- //
@@ -2079,6 +2134,10 @@ function weLayerDispose() {
     rt.root.parentNode.removeChild(rt.root)
   }
   rt.root = null
+  if (rt.backdrop && rt.backdrop.parentNode) {
+    rt.backdrop.parentNode.removeChild(rt.backdrop)
+  }
+  rt.backdrop = null
   rt.scrim = null
   if (rt.styleEl && rt.styleEl.parentNode) {
     rt.styleEl.parentNode.removeChild(rt.styleEl)
