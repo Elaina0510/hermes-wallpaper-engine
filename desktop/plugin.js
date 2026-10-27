@@ -1118,6 +1118,17 @@ const WE_LAYER_FRAME_BOX_POLL_MS = 100
  *  document, so the base is used as-is (documented trade-off, see the report). */
 const WE_LAYER_FADE_MS = 1800
 
+/** Cold-start fade. On launch there is no wallpaper underneath the incoming
+ *  layer, so the 1800ms base only delays the moment the screen stops being
+ *  empty. Measured 2026-10-26 (cold start): the window opened at ~4.4s, the
+ *  live layer was ready ~3s later, and the fade then kept it near-transparent
+ *  for another 1.8s — the whole launch read as "still loading". A short ease
+ *  reads the same over an empty screen and lands ~1.6s earlier.
+ *  Guarded by "no layer of ours is currently mounted" (see
+ *  `weLayerSetCurrent`), so a wallpaper switch between two real layers keeps
+ *  the F24 base duration. */
+const WE_LAYER_COLD_FADE_MS = 200
+
 /** Bounded diagnostic ring; `weLayerState().notes` exposes it. */
 const WE_LAYER_DIAG_LIMIT = 24
 
@@ -2718,6 +2729,13 @@ function weLayerSetCurrent(ctx, item) {
   }
 
   const transition = settings.switchTransition
+  // Cold start: nothing of ours is on screen yet (first mount of this session,
+  // or the origin-changed rebuild after the dead-port nodes were dropped). With
+  // no underlay to cross-fade from, the 1800ms base is pure delay — use the
+  // short cold fade instead. Checked BEFORE the retire loop below, which pins
+  // the outgoing layer for a real switch.
+  const coldStart = rt.nodes.length === 0
+  const fadeMs = coldStart ? WE_LAYER_COLD_FADE_MS : settings.fadeMs
   rt.generation += 1
   rt.currentId = item.id
   rt.mode = 'live'
@@ -2762,7 +2780,7 @@ function weLayerSetCurrent(ctx, item) {
   weLayerApplySettings(node, settings)
   if (transition === 'fade') {
     node.el.classList.add(WE_LAYER_IN_CLASS)
-    node.el.style.animationDuration = settings.fadeMs + 'ms'
+    node.el.style.animationDuration = fadeMs + 'ms'
     // Belt to the class removal in weLayerActivate: `animation-fill-mode: both`
     // pins the element to the animation's CURRENT frame, and a fade that never
     // completes (event lost, tab throttled, animation disabled by the host)
@@ -2778,7 +2796,7 @@ function weLayerSetCurrent(ctx, item) {
         node.el.style.animationDuration = ''
         weLayerNote(rt, 'fade-snap:' + node.id)
       }
-    }, settings.fadeMs + 80)
+    }, fadeMs + 80)
     // The snap timer is deliberately NOT registered as a node handler: a node
     // handler is disposed when the node retires, and a retiring node must not
     // cancel its own reveal. The `rt.nodes` guard above is what makes a stray
@@ -2868,6 +2886,14 @@ function weLayerSync(ctx) {
   const origin = weMediaOrigin(state)
   if (origin && rt.originUsed !== origin) {
     weLayerNote(rt, 'origin-changed:' + rt.originUsed + '->' + origin)
+    // The mounted nodes were built against a dead port: their frames hold a
+    // chrome-error document that paints nothing, so keeping them as the fade
+    // underlay (F24's normal rule) buys nothing and would pin the rebuild to
+    // the 1800ms switch fade. Dropping them makes the rebuild a cold start,
+    // which gets the short fade and shows the wallpaper ~1.6s sooner.
+    for (const node of rt.nodes.slice()) {
+      weLayerDestroyNode(rt, node, 'origin-changed')
+    }
     rt.currentId = null
     weLayerSetCurrent(ctx, item)
     return

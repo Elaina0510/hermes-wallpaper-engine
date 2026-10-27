@@ -1425,3 +1425,38 @@ test('a stale cached media origin is rebuilt once the live origin arrives', () =
     `expected an origin-changed note, got ${JSON.stringify(env.state().notes)}`,
   )
 })
+
+// Cold start means "nothing of ours is on screen yet", so the 1800ms switch
+// fade has nothing to cross-fade from and only delays the first visible frame.
+// The window opens at ~4.4s on this machine and the live layer is ready ~3s
+// later; holding it near-transparent for another 1.8s is what read as "the
+// wallpaper is still loading". A real switch (T16e) keeps the base duration.
+test('cold start: the session\'s first layer fades in fast', () => {
+  const env = setup({
+    items: [makeItem({ id: 'id-v' })],
+    config: makeConfig({ currentId: 'id-v', settings: { switchTransition: 'fade' } }),
+  })
+
+  const layer = layerOf('id-v')
+  assert.ok(layer.classList.contains('we-layer--switch-in'))
+  assert.equal(layer.style.animationDuration, '200ms', 'cold start uses the short fade')
+  assert.ok(liveTimers(env.ctx, 280).length === 1, 'the reveal snap follows the short fade')
+})
+
+test('cold start: the stale-origin rebuild drops the dead node and fades in fast', () => {
+  const stale = 'http://127.0.0.1:7001'
+  const live = 'http://127.0.0.1:7002'
+  const env = setup({
+    items: [sceneItem()],
+    config: makeConfig({ currentId: 'id-scene' }),
+    mediaOrigin: stale,
+  })
+  const dead = env.layers()[0]
+
+  env.core.weApplyLibrary({ engineFound: true, mediaOrigin: live, errors: [], items: [sceneItem()] })
+
+  assert.equal(dead.parentNode, null, 'a dead-port node must not linger as the fade underlay')
+  const layers = env.layers()
+  assert.equal(layers.length, 1)
+  assert.equal(layers[0].style.animationDuration, '200ms', 'the rebuild is a cold start, not a switch')
+})
