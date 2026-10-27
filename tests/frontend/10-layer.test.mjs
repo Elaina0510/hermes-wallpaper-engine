@@ -1194,6 +1194,20 @@ test('the layer CSS declares the scrim rules, and the surface fallback stands do
   assert.match(text, /:root:has\(\[data-wallpaper-layer\]\):not\(\[data-we-glass\]\)/)
 })
 
+// The CONNECTING boot mask paints with the very token the engine rewrites, so
+// without a counter-rule the launch screen goes 15% opaque as soon as we mount
+// (measured 2026-10-27: `rgba(24,26,30,0.15)` mid-boot) and the window's white
+// backing shows through as a blank page. The host pins [data-glass-opaque] back
+// to the chrome token in its own glass mode; we mirror it.
+test('the boot mask is pinned back to the opaque chrome colour while the engine runs', () => {
+  const core = loadBundle()
+  const text = Array.isArray(core.WE_LAYER_CSS) ? core.WE_LAYER_CSS.join('\n') : String(core.WE_LAYER_CSS)
+  assert.match(
+    text,
+    /:root\[data-we-glass\] \[data-glass-opaque\]\{background-color:var\(--ui-bg-chrome\) !important\}/,
+  )
+})
+
 test('the chat-only card is scoped to the wallpaper and never touches the sidebars', () => {
   const core = loadBundle()
   const text = String(core.WE_LAYER_CSS)

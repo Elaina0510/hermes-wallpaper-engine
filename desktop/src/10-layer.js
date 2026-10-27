@@ -201,6 +201,17 @@ const WE_LAYER_CSS = [
   // it kept the token colour and the square-ish radius while every other
   // surface was glass).
   ':root[data-we-card] [data-overlay-surface] [data-glass-raised]{background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-overlay-pct, 55%), transparent) !important;-webkit-backdrop-filter:blur(var(--we-overlay-blur, 16px)) saturate(1.05);backdrop-filter:blur(var(--we-overlay-blur, 16px)) saturate(1.05);border-radius:14px !important;border-color:rgba(255,255,255,0.08) !important;box-shadow:0 12px 32px rgba(0,0,0,0.32) !important}',
+  // The host's cold-boot screen (GatewayConnectingOverlay) paints an opaque
+  // full-window mask with `--ui-chat-surface-background` and declares
+  // `[data-glass-opaque]`. We rewrite that same token to rgba(chrome,
+  // cardBase%) so the page cards turn to glass — so the moment this plugin
+  // mounted, the CONNECTING screen dropped to 15% opacity and the window's own
+  // light background showed through: launch read as a blank white page
+  // (measured 2026-10-27: overlay background `rgba(24,26,30,0.15)` at t=746ms,
+  // while the host's own token was `rgb(13,16,21)` at t=589ms). The host's glass
+  // mode solves the identical collision by pinning `[data-glass-opaque]` back to
+  // the opaque chrome token; mirror that rule while our engine owns the tokens.
+  ':root[data-we-glass] [data-glass-opaque]{background-color:var(--ui-bg-chrome) !important}',
   '.we-layer{position:absolute;inset:0;opacity:1;pointer-events:none;background:transparent}',
   '.we-layer__media{display:block;width:100%;height:100%;object-fit:cover;object-position:center;pointer-events:none;background:transparent}',
   // The scrim film sits ABOVE every layer node (z-index 1 in the root's own
