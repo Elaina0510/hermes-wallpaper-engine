@@ -69,7 +69,7 @@ cd <HERMES_HOME>/plugins/wallpaper-engine
 python desktop/build.py
 ```
 
-- 期望输出：`built: ... from 6 file(s), 325636 bytes` + `sha256: 294c24cd…`。
+- 期望输出：`built: ... from 6 file(s), 327011 bytes` + `sha256: a06d3bd7…`。
 - 若你改过 `desktop/src/*.js`，这一步必跑；产物变了就说明源码真的生效了。
 - `build.py` 只用标准库，任何 Python 3 都能跑（本机用 3.12.10 实测；更早版本未实测）。
 
@@ -320,8 +320,8 @@ python desktop/build.py --src desktop/src --out desktop/plugin.js
 当前产物（本机实测）：
 
 ```text
-built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 325636 bytes
-sha256: 294c24cd4cfe168a7ae6486e600839808041c46e4842d651969876479ecf657e
+built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 327011 bytes
+sha256: a06d3bd7ba62fdb5c1d62356ce4672ac88cbe0af3ce75a0e93a464ddd3ad845b
 ```
 
 同一份源码连跑两次，sha256 完全一致（已实测 3 次：产物落盘 + 两次写 scratch）。树里的 `desktop/plugin.js` 与重新构建的字节完全相同，说明它是当前源码的产物，不是中间态残留。

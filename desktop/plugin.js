@@ -1276,6 +1276,11 @@ const weLayerRuntime = {
   backdrop: null,
   /** Cached still painted before the live node has a frame (see the poster block). */
   poster: null,
+  /** True once GET /config + /library settled. The hydrated boot flag is NOT a
+   *  proxy for this: hydration marks the store `ready` from the cache, which is
+   *  exactly the state that must not retire the poster (a dead-port frame can
+   *  report `active` there). See weLayerMarkBootstrapped. */
+  bootstrapDone: false,
   styleEl: null,
   /** The `scrim` dark-film element under the root (one per layer stack). */
   scrim: null,
@@ -1867,6 +1872,25 @@ function weLayerPosterClear(rt) {
     rt.poster.parentNode.removeChild(rt.poster)
   }
   rt.poster = null
+}
+
+/**
+ * Called by the register step once `GET /config` + `GET /library` settled.
+ * Only from here on is an `active` layer trustworthy: before it, the mount is
+ * built from the cached snapshot's media origin, which belongs to the previous
+ * backend process (an ephemeral port). That frame's `load` fires on a
+ * chrome-error page, so retiring the poster on it would remove the still
+ * seconds before the real one arrives — the exact gap it exists to cover.
+ *
+ * A warm start (the snapshot origin still live) already has its layer active by
+ * now and never sees another `activate`, so retire here in that case.
+ */
+function weLayerMarkBootstrapped() {
+  const rt = weLayerRuntime
+  rt.bootstrapDone = true
+  if (rt.poster && weGetState().layer === WE_LAYER.ACTIVE) {
+    weLayerPosterRetire(rt)
+  }
 }
 
 /**
@@ -2794,7 +2818,7 @@ function weLayerActivate(rt, node) {
   // Only once the store carries the live backend's answer: before that, a
   // "load" can be the dead snapshot port's chrome-error page (see the poster
   // block) and the still must stay.
-  if (weGetState().boot === WE_BOOT.READY) {
+  if (rt.bootstrapDone) {
     weLayerPosterRetire(rt)
   }
 }
@@ -2823,7 +2847,7 @@ function weLayerActivateStatic(rt, node) {
     weSet({ layer: WE_LAYER.FALLBACK })
   }
   weLayerNote(rt, 'static-active:' + node.id)
-  if (weGetState().boot === WE_BOOT.READY) {
+  if (rt.bootstrapDone) {
     weLayerPosterRetire(rt)
   }
 }
@@ -9074,6 +9098,11 @@ function weRegRegister(ctx) {
           function settled() {
             if (!rt.disposed) {
               weRegReconcile(rt.ctx)
+              // The layer only trusts an `active` frame after this point (the
+              // cached snapshot's origin belongs to the previous backend).
+              if (typeof weLayerMarkBootstrapped === 'function') {
+                weLayerMarkBootstrapped()
+              }
             }
           },
           function rejected(error) {

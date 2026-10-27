@@ -117,6 +117,7 @@ const LAYER_SYMBOLS = [
   'weLayerReload',
   'weLayerState',
   'weLayerRoot',
+  'weLayerMarkBootstrapped',
 ]
 
 const CORE_SYMBOLS = [
@@ -1301,12 +1302,14 @@ test('the still retires shortly after the live layer reports active', () => {
     storage: makeStorage({ 'we.poster.v1.id-a': POSTER_A }),
   })
   const poster = env.doc.querySelector('.we-layer__poster')
-  env.core.weSet({ boot: 'ready' })
   const video = videoOf('id-a')
   video.__readyState = 4
   fire(env.dom, video, 'loadeddata')
 
   assert.ok(poster.parentNode, 'the still stays up during the hold')
+  assert.equal(liveTimers(env.ctx, 450).length, 0, 'a pre-bootstrap activate must not retire it')
+
+  env.core.weLayerMarkBootstrapped()
   const fade = liveTimers(env.ctx, 450)[0]
   assert.ok(fade, 'a hold timer must be armed on activate')
   fireTimer(fade)

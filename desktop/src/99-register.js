@@ -839,6 +839,11 @@ function weRegRegister(ctx) {
           function settled() {
             if (!rt.disposed) {
               weRegReconcile(rt.ctx)
+              // The layer only trusts an `active` frame after this point (the
+              // cached snapshot's origin belongs to the previous backend).
+              if (typeof weLayerMarkBootstrapped === 'function') {
+                weLayerMarkBootstrapped()
+              }
             }
           },
           function rejected(error) {
