@@ -1224,9 +1224,16 @@ const WE_LAYER_CSS = [
   // The zone is named by its own tab (`data-tree-tab="preview-tile:<tabId>"`,
   // PREVIEW_TILE_PREFIX in the host store) — stable across file kinds (text /
   // image / pdf / html / url) and across tab switches inside the same zone.
+  // TWO stacked layers, because that is what the chat card actually is: the
+  // chat pane's zone paints the editor token (chrome, cardBase%) and the card
+  // inside it paints composer-fill (cardBase%) ON TOP, with its backdrop-filter
+  // sampling the tinted group behind it. One layer read visibly lighter than
+  // the chat next to it (2026-11-12: 聊天的要暗一点). So: top = composer-fill,
+  // bottom = the editor token this zone would have painted anyway — the same
+  // double composite at the same slider value.
   // Material only, no margin/radius: the zone owns the tab strip and its box
   // must not shift (a carded zone would also double-inset a split chat).
-  ':root[data-we-card] [data-tree-group]:has([data-tree-tab^="preview-tile:"]){background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent) !important;-webkit-backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05);backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05)}',
+  ':root[data-we-card] [data-tree-group]:has([data-tree-tab^="preview-tile:"]){background:linear-gradient(color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent),color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent)),linear-gradient(var(--ui-editor-surface-background, transparent),var(--ui-editor-surface-background, transparent)) !important;-webkit-backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05);backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05)}',
   // The host's cold-boot screen (GatewayConnectingOverlay) paints an opaque
   // full-window mask with `--ui-chat-surface-background` and declares
   // `[data-glass-opaque]`. We rewrite that same token to rgba(chrome,

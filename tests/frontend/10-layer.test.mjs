@@ -1348,7 +1348,15 @@ test('the chat-only card is scoped to the wallpaper and never touches the sideba
   const previewRule = text.split('\n').find(line => line.includes('[data-tree-tab^="preview-tile:"]'))
   assert.ok(previewRule, 'the preview zone rule must exist')
   assert.match(previewRule, /^:root\[data-we-card\] \[data-tree-group\]:has\(/)
-  assert.match(previewRule, /background:color-mix\(in srgb, var\(--composer-fill, #0d1117\) var\(--we-card-pct, 55%\), transparent\) !important/)
+  // TWO layers, in this order: composer-fill on top, the editor token under it.
+  // The chat card is the same double composite (tinted zone + card over it); a
+  // single layer measured visibly lighter than the chat beside it (2026-11-12).
+  assert.ok(
+    previewRule.includes(
+      'background:linear-gradient(color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent),color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent)),linear-gradient(var(--ui-editor-surface-background, transparent),var(--ui-editor-surface-background, transparent)) !important',
+    ),
+    'the preview zone must stack the same two tints the chat card composites',
+  )
   assert.match(previewRule, /backdrop-filter:blur\(var\(--we-card-blur, 16px\)\) saturate\(1\.05\)/)
   assert.ok(!/margin|border-radius/.test(previewRule), 'material only — the zone geometry stays the host\'s')
   // the inner composer-bounds paints the same surface colour again — it must
