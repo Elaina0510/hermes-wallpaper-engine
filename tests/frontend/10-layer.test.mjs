@@ -1342,6 +1342,15 @@ test('the chat-only card is scoped to the wallpaper and never touches the sideba
     text.includes('[data-overlay-surface] [data-glass-raised]{background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-overlay-pct, 55%), transparent) !important;'),
     'overlay cards (定时任务/设置/命令中心) wear the same material',
   )
+  // file preview panes carry the same mask: without it the pane sat on bare
+  // wallpaper (no blur, only the editor token's tint). Keyed on the zone's own
+  // preview tab, and material-only so the tab strip's box never shifts.
+  const previewRule = text.split('\n').find(line => line.includes('[data-tree-tab^="preview-tile:"]'))
+  assert.ok(previewRule, 'the preview zone rule must exist')
+  assert.match(previewRule, /^:root\[data-we-card\] \[data-tree-group\]:has\(/)
+  assert.match(previewRule, /background:color-mix\(in srgb, var\(--composer-fill, #0d1117\) var\(--we-card-pct, 55%\), transparent\) !important/)
+  assert.match(previewRule, /backdrop-filter:blur\(var\(--we-card-blur, 16px\)\) saturate\(1\.05\)/)
+  assert.ok(!/margin|border-radius/.test(previewRule), 'material only — the zone geometry stays the host\'s')
   // the inner composer-bounds paints the same surface colour again — it must
   // go transparent or it covers the card material
   assert.match(text, /\[data-slot="composer-bounds"\]\{background:transparent !important\}/)

@@ -69,7 +69,7 @@ cd <HERMES_HOME>/plugins/wallpaper-engine
 python desktop/build.py
 ```
 
-- 期望输出：`built: ... from 6 file(s), 327011 bytes` + `sha256: a06d3bd7…`。
+- 期望输出：`built: ... from 6 file(s), 328143 bytes` + `sha256: c40fc038…`。
 - 若你改过 `desktop/src/*.js`，这一步必跑；产物变了就说明源码真的生效了。
 - `build.py` 只用标准库，任何 Python 3 都能跑（本机用 3.12.10 实测；更早版本未实测）。
 
@@ -320,8 +320,8 @@ python desktop/build.py --src desktop/src --out desktop/plugin.js
 当前产物（本机实测）：
 
 ```text
-built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 327011 bytes
-sha256: a06d3bd7ba62fdb5c1d62356ce4672ac88cbe0af3ce75a0e93a464ddd3ad845b
+built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 328143 bytes
+sha256: c40fc03827246b69ca5abc860bf70fbdddfa38d0f04c4d2a931abba357463f53
 ```
 
 同一份源码连跑两次，sha256 完全一致（已实测 3 次：产物落盘 + 两次写 scratch）。树里的 `desktop/plugin.js` 与重新构建的字节完全相同，说明它是当前源码的产物，不是中间态残留。
@@ -334,7 +334,7 @@ sha256: a06d3bd7ba62fdb5c1d62356ce4672ac88cbe0af3ce75a0e93a464ddd3ad845b
 
 | 锚点 | 怎么验 | 预期看到什么 | 可验方式 |
 |---|---|---|---|
-| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `6a4711c8…` | 命令行 ✅ |
+| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `c40fc038…` | 命令行 ✅ |
 | 产物语法（T12） | `node --check desktop/plugin.js` | 无输出、exit 0 | 命令行 ✅ |
 | `/status` 200 + 7 键 | `PYTHONDONTWRITEBYTECODE=1 <venv>/python -m pytest tests/test_plugin_api.py -p no:cacheprovider -k status` | 通过；键集恰为 `ok version engineFound installDir libraryDirs mediaOrigin mediaError` | 命令行 ✅（TestClient，不经真网关） |
 | `/library` 返回条目 | `... -k library` | 通过；伪造 Steam 树下返回条目，`kind/path/preview` 正确 | 命令行 ✅（用 `tests/fixtures/fake-steam*`）；真实库需真机 |
@@ -383,6 +383,7 @@ PYTHONDONTWRITEBYTECODE=1 \
 | 面板一打开就报配置错误，或设置改动不生效 | `data/config.json` 损坏/是未来版本 | 插件会把坏文件移成 `data/config.bad-<YYYYmmdd-HHMMSS>-<mmm>.json`（未来版本是 `config.future-…json`）并用默认值重建。恢复：从备份文件抄回你需要的字段，或直接让面板重新调 |
 | 关掉插件后壁纸还在 / 玻璃没还原 | 「Plugins 页开关」与 `settings.enabled` 是两个独立开关（§7.6） | 先下面板里的「启用壁纸」开关（还原 token、移除图层），再去 Plugins 页关模块。卸载（删目录）等价于前者关闭 + 物化副本清理 |
 | 媒体请求 403 | 路径逃逸被围栏拦下（`..`、绝对路径、盘符、URL 编码绕过、symlink） | 这是**正确**行为，不是 bug。检查壁纸目录里是否有指向库外的符号链接；`/m` 的失效 token 是 404 而不是 403 |
+| 预览文件时，预览面板背后没有遮罩，正文/代码直接压在壁纸上，旁边聊天区却有一层毛玻璃 | 预览面板是一个 pane zone，背景走 `--ui-editor-surface-background`；玻璃引擎只给这个 token 写半透明**色**、不做模糊，而聊天区那层毛玻璃是 `[data-chat-surface]` 卡片自带的 `backdrop-filter`（2026-11-12 报告） | 已修：`[data-tree-group]:has([data-tree-tab^="preview-tile:"])` 套用和聊天卡同材质的遮罩（`--we-card-pct` / `--we-card-blur`，跟着「卡片玻璃」滑杆走），只加材质不动几何，标签栏位置不变。升级插件后重启桌面端 |
 | 8K 级大壁纸掉帧 | 不缩放，直接依赖 GPU；`wallpaperBlur > 0` 时更吃 GPU | 把「壁纸模糊」归 0；场景壁纸降帧率到 15；仍不行就换小尺寸壁纸 |
 | DevTools 里 `/api/plugins/wallpaper-engine/status` 是 404 | 后端没被 import：不在 `plugins.enabled` 白名单里（`_plugin_api_mount_skip_reason` 的 `not in plugins.enabled`） | 回到 §2 步骤 3/4：加白名单 + 重启 serve。用 `hermes config get plugins.enabled` 确认键真的存在且是 list |
 | `plugin.js` 存在但界面没反应 | 桌面端副本没更新，或 `plugin.js` 是旧构建 | 重跑 `python desktop/build.py`，确认 sha 变了；重启桌面应用让 reconcile 重新复制到 `<HERMES_HOME>/desktop-plugins/` |
@@ -469,7 +470,7 @@ node --test tests/frontend/00-core.test.mjs \
 
 ```bash
 cd <HERMES_HOME>/plugins/wallpaper-engine
-python desktop/build.py                     # 期望 sha256: 6a4711c8…（改过源码则会变）
+python desktop/build.py                     # 期望 sha256: c40fc038…（改过源码则会变）
 node --check desktop/plugin.js               # 无输出
 node --test tests/frontend/*.test.mjs        # 201/201（shell 展开成具体文件，仍不是目录）
 find . -name '__pycache__' -o -name '.pytest_cache' -o -name '*.pyc' -o -name '*.tmp'   # 必须为空

@@ -203,6 +203,17 @@ const WE_LAYER_CSS = [
   // it kept the token colour and the square-ish radius while every other
   // surface was glass).
   ':root[data-we-card] [data-overlay-surface] [data-glass-raised]{background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-overlay-pct, 55%), transparent) !important;-webkit-backdrop-filter:blur(var(--we-overlay-blur, 16px)) saturate(1.05);backdrop-filter:blur(var(--we-overlay-blur, 16px)) saturate(1.05);border-radius:14px !important;border-color:rgba(255,255,255,0.08) !important;box-shadow:0 12px 32px rgba(0,0,0,0.32) !important}',
+  // File previews (点开文件 / 附件 → 右侧预览面板) mount inside a pane zone
+  // whose body paints --ui-editor-surface-background. 30-glass writes that
+  // token as a translucent tint with NO blur, so a preview pane sat on the bare
+  // wallpaper: text over a moving video, no mask, while the chat beside it was a
+  // frosted card (2026-11-12: 预览文件时底层没有聊天窗口那样的遮罩).
+  // The zone is named by its own tab (`data-tree-tab="preview-tile:<tabId>"`,
+  // PREVIEW_TILE_PREFIX in the host store) — stable across file kinds (text /
+  // image / pdf / html / url) and across tab switches inside the same zone.
+  // Material only, no margin/radius: the zone owns the tab strip and its box
+  // must not shift (a carded zone would also double-inset a split chat).
+  ':root[data-we-card] [data-tree-group]:has([data-tree-tab^="preview-tile:"]){background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent) !important;-webkit-backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05);backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05)}',
   // The host's cold-boot screen (GatewayConnectingOverlay) paints an opaque
   // full-window mask with `--ui-chat-surface-background` and declares
   // `[data-glass-opaque]`. We rewrite that same token to rgba(chrome,
