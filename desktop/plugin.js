@@ -1231,9 +1231,27 @@ const WE_LAYER_CSS = [
   // the chat next to it (2026-11-12: 聊天的要暗一点). So: top = composer-fill,
   // bottom = the editor token this zone would have painted anyway — the same
   // double composite at the same slider value.
-  // Material only, no margin/radius: the zone owns the tab strip and its box
-  // must not shift (a carded zone would also double-inset a split chat).
   ':root[data-we-card] [data-tree-group]:has([data-tree-tab^="preview-tile:"]){background:linear-gradient(color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent),color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent)),linear-gradient(var(--ui-editor-surface-background, transparent),var(--ui-editor-surface-background, transparent)) !important;-webkit-backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05);backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05)}',
+  // …and the CARD itself (2026-11-12: 没有收进圆角玻璃卡): the same box recipe as
+  // `[data-chat-surface]` — 12px gutter, 14px radius, hairline border, one soft
+  // shadow — and only ONE background layer, because its 12px gutter is now the
+  // split TRACK painted with the editor token (rule below). Zone tint under +
+  // composer-fill card over = literally the chat card's own stack.
+  // GUARD: only while the zone shows its horizontal tab strip
+  // (`[data-zone-tabstrip]`). A zone minimized to the 28px vertical rail renders
+  // that rail INSIDE this same group — 12px margins would leave it 4px wide and
+  // unclickable, so the rail keeps the full-bleed mask from the rule above. A
+  // window with strips switched off also lands here: mask, no card.
+  ':root[data-we-card] [data-tree-group]:has([data-zone-tabstrip] [data-tree-tab^="preview-tile:"]){margin:12px !important;border-radius:14px !important;border:1px solid rgba(255,255,255,0.08) !important;box-shadow:0 12px 32px rgba(0,0,0,0.32) !important;background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent) !important}',
+  // The gutter. The chat side's 12px margin shows its ZONE tint, because the chat
+  // group paints --ui-editor-surface-background across the whole box; a carded
+  // preview group would otherwise sit in a clear 12px gap and read as a hole in
+  // the split (measured 2026-11-12: gutter 191,46,96 vs the chat's 95,14,45).
+  // Tinting the TRACK reproduces the chat's gutter AND removes the need for a
+  // second layer on the card. `> [data-tree-group]` keeps the tint on the one
+  // track that directly holds the zone — an outer track of a nested split has a
+  // split child, not a group, so it never double-tints.
+  ':root[data-we-card] [data-tree-split]>div:has(> [data-tree-group] [data-zone-tabstrip] [data-tree-tab^="preview-tile:"]){background:var(--ui-editor-surface-background, transparent) !important}',
   // The host's cold-boot screen (GatewayConnectingOverlay) paints an opaque
   // full-window mask with `--ui-chat-surface-background` and declares
   // `[data-glass-opaque]`. We rewrite that same token to rgba(chrome,

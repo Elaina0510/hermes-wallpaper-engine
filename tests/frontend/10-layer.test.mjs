@@ -1342,24 +1342,46 @@ test('the chat-only card is scoped to the wallpaper and never touches the sideba
     text.includes('[data-overlay-surface] [data-glass-raised]{background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-overlay-pct, 55%), transparent) !important;'),
     'overlay cards (定时任务/设置/命令中心) wear the same material',
   )
-  // file preview panes carry the same mask: without it the pane sat on bare
-  // wallpaper (no blur, only the editor token's tint). Keyed on the zone's own
-  // preview tab, and material-only so the tab strip's box never shifts.
-  const previewRule = text.split('\n').find(line => line.includes('[data-tree-tab^="preview-tile:"]'))
-  assert.ok(previewRule, 'the preview zone rule must exist')
-  assert.match(previewRule, /^:root\[data-we-card\] \[data-tree-group\]:has\(/)
+  // File preview panes: mask -> card -> gutter, three rules that must stay in
+  // step. Without them the pane sat on bare wallpaper with no blur at all, then
+  // read lighter than the chat, then had no rounded card (2026-11-12 reports).
+  const previewLines = text.split('\n').filter(line => line.includes('[data-tree-tab^="preview-tile:"]'))
+  const previewMask = previewLines.find(line => !line.includes('[data-zone-tabstrip]'))
+  const previewCard = previewLines.find(line => line.includes('margin:12px'))
+  const previewTrack = previewLines.find(line => line.includes('[data-tree-split]>div'))
+
+  assert.ok(previewMask && previewCard && previewTrack, 'all three preview rules must exist')
+  assert.match(previewMask, /^:root\[data-we-card\] \[data-tree-group\]:has\(/)
   // TWO layers, in this order: composer-fill on top, the editor token under it.
   // The chat card is the same double composite (tinted zone + card over it); a
-  // single layer measured visibly lighter than the chat beside it (2026-11-12).
+  // single layer measured visibly lighter than the chat beside it.
   assert.ok(
-    previewRule.includes(
+    previewMask.includes(
       'background:linear-gradient(color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent),color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent)),linear-gradient(var(--ui-editor-surface-background, transparent),var(--ui-editor-surface-background, transparent)) !important',
     ),
     'the preview zone must stack the same two tints the chat card composites',
   )
-  assert.match(previewRule, /backdrop-filter:blur\(var\(--we-card-blur, 16px\)\) saturate\(1\.05\)/)
-  assert.ok(!/margin|border-radius/.test(previewRule), 'material only — the zone geometry stays the host\'s')
-  // the inner composer-bounds paints the same surface colour again — it must
+  assert.match(previewMask, /backdrop-filter:blur\(var\(--we-card-blur, 16px\)\) saturate\(1\.05\)/)
+  assert.ok(!/margin|border-radius/.test(previewMask), 'the fallback stays material-only — its box is the host\'s')
+
+  // The card: chat-surface recipe, ONE background layer (the track tints under it).
+  assert.ok(previewCard.includes('[data-zone-tabstrip] [data-tree-tab^="preview-tile:"]'), 'the card is gated on a visible horizontal strip')
+  for (const box of ['margin:12px !important', 'border-radius:14px !important', 'border:1px solid rgba(255,255,255,0.08) !important', 'box-shadow:0 12px 32px rgba(0,0,0,0.32) !important']) {
+    assert.ok(previewCard.includes(box), `preview card is missing ${box}`)
+  }
+  assert.ok(
+    previewCard.includes('background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent) !important'),
+    'the card paints composer-fill only — the track supplies the zone tint',
+  )
+  assert.ok(!previewCard.includes(':is('), 'no nested-:has tricks: the card guard is one attribute')
+
+  // The gutter: the split track that directly holds the zone gets the editor
+  // token, so the 12px seam matches the chat side's (the chat group paints it
+  // across its whole box). `> [data-tree-group]` keeps nested tracks out.
+  assert.ok(previewTrack.includes('[data-tree-split]>div:has(> [data-tree-group] [data-zone-tabstrip]'))
+  assert.ok(previewTrack.includes('background:var(--ui-editor-surface-background, transparent) !important'))
+
+  // The inner composer-bounds paints the same surface colour again — it must
   // go transparent or it covers the card material
   assert.match(text, /\[data-slot="composer-bounds"\]\{background:transparent !important\}/)
   // no sidebar/editor surface is carded (user: 只卡对话区)
