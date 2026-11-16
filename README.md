@@ -69,7 +69,7 @@ cd <HERMES_HOME>/plugins/wallpaper-engine
 python desktop/build.py
 ```
 
-- 期望输出：`built: ... from 6 file(s), 330708 bytes` + `sha256: f0a91d7a…`。
+- 期望输出：`built: ... from 6 file(s), 333377 bytes` + `sha256: 66383cd3…`。
 - 若你改过 `desktop/src/*.js`，这一步必跑；产物变了就说明源码真的生效了。
 - `build.py` 只用标准库，任何 Python 3 都能跑（本机用 3.12.10 实测；更早版本未实测）。
 
@@ -320,8 +320,8 @@ python desktop/build.py --src desktop/src --out desktop/plugin.js
 当前产物（本机实测）：
 
 ```text
-built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 330708 bytes
-sha256: f0a91d7a4559102b3856f929fc34304d7348c7b5f538589cb2d500f124058042
+built: <HERMES_HOME>/plugins/wallpaper-engine/desktop/plugin.js from 6 file(s), 333377 bytes
+sha256: 66383cd3dfbe3eac2dbe35635a02567526af6b428d4aeefdf0c22681b0395d53
 ```
 
 同一份源码连跑两次，sha256 完全一致（已实测 3 次：产物落盘 + 两次写 scratch）。树里的 `desktop/plugin.js` 与重新构建的字节完全相同，说明它是当前源码的产物，不是中间态残留。
@@ -334,7 +334,7 @@ sha256: f0a91d7a4559102b3856f929fc34304d7348c7b5f538589cb2d500f124058042
 
 | 锚点 | 怎么验 | 预期看到什么 | 可验方式 |
 |---|---|---|---|
-| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `f0a91d7a…` | 命令行 ✅ |
+| 构建确定性（T10） | `python desktop/build.py` 连跑两次 | 两次 `sha256:` 相同；当前应为 `66383cd3…` | 命令行 ✅ |
 | 产物语法（T12） | `node --check desktop/plugin.js` | 无输出、exit 0 | 命令行 ✅ |
 | `/status` 200 + 7 键 | `PYTHONDONTWRITEBYTECODE=1 <venv>/python -m pytest tests/test_plugin_api.py -p no:cacheprovider -k status` | 通过；键集恰为 `ok version engineFound installDir libraryDirs mediaOrigin mediaError` | 命令行 ✅（TestClient，不经真网关） |
 | `/library` 返回条目 | `... -k library` | 通过；伪造 Steam 树下返回条目，`kind/path/preview` 正确 | 命令行 ✅（用 `tests/fixtures/fake-steam*`）；真实库需真机 |
@@ -470,7 +470,7 @@ node --test tests/frontend/00-core.test.mjs \
 
 ```bash
 cd <HERMES_HOME>/plugins/wallpaper-engine
-python desktop/build.py                     # 期望 sha256: f0a91d7a…（改过源码则会变）
+python desktop/build.py                     # 期望 sha256: 66383cd3…（改过源码则会变）
 node --check desktop/plugin.js               # 无输出
 node --test tests/frontend/*.test.mjs        # 201/201（shell 展开成具体文件，仍不是目录）
 find . -name '__pycache__' -o -name '.pytest_cache' -o -name '*.pyc' -o -name '*.tmp'   # 必须为空

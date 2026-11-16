@@ -239,6 +239,30 @@ const WE_LAYER_CSS = [
   // track that directly holds the zone — an outer track of a nested split has a
   // split child, not a group, so it never double-tints.
   ':root[data-we-card] [data-tree-split]>div:has(> [data-tree-group] [data-zone-tabstrip] [data-tree-tab^="preview-tile:"]){background:var(--ui-editor-surface-background, transparent) !important}',
+  // The chat ZONE takes the same card as a preview zone (2026-11-16, user
+  // request: 会话窗口顶到顶部，文件预览是方形板块，都按预览那样走). The chat
+  // card above wraps only `[data-chat-surface]`, i.e. the body BELOW the zone's
+  // tab strip — so the strip still sat full-bleed on the window's top edge and
+  // the pane read as two pieces: a bar glued to the titlebar, a card under it.
+  // A preview zone never had that seam because its group rule wraps strip +
+  // body together. Same box here (12px gutter / 14px radius / hairline / one
+  // shadow) on the GROUP, so the strip lands inside the card like the preview
+  // title bar does. `[data-chat-surface]` marks every chat pane (`workspace`,
+  // `session-tile:*`), so this also covers tiled sessions without naming ids.
+  // GUARD: a visible horizontal strip, exactly like the preview card — a zone
+  // minimized to its 28px vertical rail renders INSIDE this group, and a 12px
+  // gutter would leave the rail 4px wide and unclickable. No strip → no card
+  // here, and the base `[data-chat-surface]` card below is still on.
+  ':root[data-we-card] [data-tree-group]:has([data-zone-tabstrip]):has([data-chat-surface]){margin:12px !important;border-radius:14px !important;border:1px solid rgba(255,255,255,0.08) !important;box-shadow:0 12px 32px rgba(0,0,0,0.32) !important;background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent) !important;-webkit-backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05);backdrop-filter:blur(var(--we-card-blur, 16px)) saturate(1.05)}',
+  // …and the surface that used to BE the card drops its own box, so the card is
+  // drawn once, by the group. Left in, the two boxes nested and read as a 12px
+  // frame inside the frame (card-in-card) instead of one panel. Beats the base
+  // rule on specificity (one extra ancestor), not on order.
+  ':root[data-we-card] [data-tree-group]:has([data-zone-tabstrip]):has([data-chat-surface]) [data-chat-surface]{margin:0 !important;height:100% !important;border-radius:0 !important;border:0 !important;box-shadow:none !important;background:transparent !important;-webkit-backdrop-filter:none;backdrop-filter:none}',
+  // The chat gutter, for the reason the preview track below exists: the group
+  // no longer paints the editor token across the whole box, so its 12px ring
+  // would show the wallpaper straight through and read as a hole in the split.
+  ':root[data-we-card] [data-tree-split]>div:has(> [data-tree-group]:has([data-zone-tabstrip]):has([data-chat-surface])){background:var(--ui-editor-surface-background, transparent) !important}',
   // The host's cold-boot screen (GatewayConnectingOverlay) paints an opaque
   // full-window mask with `--ui-chat-surface-background` and declares
   // `[data-glass-opaque]`. We rewrite that same token to rgba(chrome,

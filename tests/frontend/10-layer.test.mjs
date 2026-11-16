@@ -1387,6 +1387,34 @@ test('the chat-only card is scoped to the wallpaper and never touches the sideba
   // no sidebar/editor surface is carded (user: 只卡对话区)
   assert.ok(!/\[data-slot="sidebar-wrapper"\][^{]*\{[^}]*border-radius/.test(text))
   assert.ok(!/\[data-slot="composer-bounds"\][^{]*\{[^}]*border-radius/.test(text))
+
+  // The chat ZONE card (2026-11-16): the zone's tab strip has to land INSIDE
+  // the panel, exactly like a preview zone, or the pane reads as a bar glued to
+  // the titlebar plus a card under it. Three rules, in step: group card, inner
+  // surface yields, gutter tinted.
+  const chatZoneLines = text.split('\n').filter(line => line.includes(':has([data-chat-surface])'))
+  const chatZoneCard = chatZoneLines.find(line => line.includes('margin:12px'))
+  const chatZoneYield = chatZoneLines.find(line => line.includes('[data-chat-surface]{'))
+  const chatZoneTrack = chatZoneLines.find(line => line.includes('[data-tree-split]>div'))
+
+  assert.ok(chatZoneCard && chatZoneYield && chatZoneTrack, 'all three chat-zone rules must exist')
+  // Gated on a visible strip: the minimized 28px rail must stay full-bleed.
+  assert.ok(chatZoneCard.includes(':has([data-zone-tabstrip])'), 'the chat card is gated on a visible horizontal strip')
+  for (const box of ['border-radius:14px !important', 'border:1px solid rgba(255,255,255,0.08) !important', 'box-shadow:0 12px 32px rgba(0,0,0,0.32) !important']) {
+    assert.ok(chatZoneCard.includes(box), `chat zone card is missing ${box}`)
+  }
+  assert.ok(
+    chatZoneCard.includes('background:color-mix(in srgb, var(--composer-fill, #0d1117) var(--we-card-pct, 55%), transparent) !important'),
+    'the chat zone card paints the same material as the preview card',
+  )
+  // The surface inside must stop drawing its own box, or the result is a card
+  // nested in a card (12px frame inside the frame).
+  assert.ok(chatZoneYield.includes('margin:0 !important'), 'the inner chat surface drops its gutter')
+  assert.ok(chatZoneYield.includes('background:transparent !important'), 'the inner chat surface stops painting the material')
+  assert.ok(chatZoneYield.includes('box-shadow:none !important'), 'the inner chat surface drops its shadow')
+  // …but only where a chat zone was carded: without a strip the base card wins.
+  assert.ok(chatZoneYield.includes('[data-zone-tabstrip]'), 'the yield is scoped to a carded chat zone')
+  assert.ok(chatZoneTrack.includes('background:var(--ui-editor-surface-background, transparent) !important'))
 })
 
 test('界面卡片化 is the switch behind `data-we-card`, and teardown drops it', () => {
